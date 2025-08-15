@@ -12,3 +12,4 @@ run/
 TickDynamic_Client.launch
 TickDynamic_Server.launch
 /.idea/
+/build/
