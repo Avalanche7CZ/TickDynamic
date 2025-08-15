@@ -40,7 +40,7 @@ public class EntityIteratorTimed implements Iterator<EntityObject> {
 	public boolean hasNext() {
 		if(currentAge != list.age)
 			throw new ConcurrentModificationException("List modified before going to next entry.");
-		if(remainingCount > 0 && entityList.size() > 0)
+		if(remainingCount > 0 && !entityList.isEmpty())
 			return true;
 		
 		//Find next group and end timer on current group
