@@ -72,10 +72,12 @@ import cpw.mods.fml.common.network.NetworkRegistry;
  * - Entities and TileEntities grouped by owner(Player), and limits can be set per player.
  */
 
+@cpw.mods.fml.common.Mod(modid= TickDynamicMod.MODID, name=TickDynamicMod.MOD_NAME, version=TickDynamicMod.VERSION)
 public class TickDynamicMod extends DummyModContainer
 {
     public static final String MODID = "tickDynamic";
-    public static final String VERSION = "0.2.0-dev4";
+	public static final String MOD_NAME = "TickDynamic: Funny Edition";
+    public static final String VERSION = "0.1.0-FUNI";
     public static boolean debug = false;
     public static boolean debugGroups = false;
     public static boolean debugTimer = false;
