@@ -1,13 +1,5 @@
 # TickDynamic
-### NO LONGER MAINTAINED. Source is available to any who would like to fork, modify or use it.
-Public Issues repository for the Minecraft mod Tick Dynamic.
+### Temporarily maintained by @mayonnaizze on Discord, as their interest and time waxes and wanes.
+Public Issues repository for the Minecraft mod Tick Dynamic: Funny Edition.
 
-Development Releases:
-There are currently development releases of version 0.2.0 on github.
-- Forge 1.8.9
-- Forge 1.7.10
-- KCauldron
-
-Check the "Releases" tab on the top. I would appreciate any feedback on the dev versions, so I can make the final releases as bug-free as possible. =)
-
-Webpage & final release downloads: http://mods.stjerncraft.com/tickdynamic
+Fixes up TickDynamic for modern JVMs (LWJGL3-ify) somewhat. 1.7.10 only.
