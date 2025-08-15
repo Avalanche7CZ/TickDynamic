@@ -467,7 +467,7 @@ public class ListManager implements List<EntityObject> {
 		int offset = 0;
 		for(EntityGroup group : localGroups)
 		{
-			System.arraycopy(group.entities, 0, objects, offset, group.entities.size());
+			System.arraycopy(group.entities.toArray(), 0, objects, offset, group.entities.size());
 			offset += group.entities.size();
 		}
 		return objects;
