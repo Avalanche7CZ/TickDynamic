@@ -45,7 +45,6 @@ public class ExtraTextifier extends Textifier {
     public void visitLocalVariable(final String name, final String desc,
             final String signature, final Label start, final Label end,
             final int index) {
-        buf.setLength(0);
         
         if (signature != null) {
             buf.append(tab2);
