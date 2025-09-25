@@ -22,7 +22,8 @@ public class EntityIteratorTimed implements Iterator<EntityObject> {
 	private int currentOffset; //Offset in current entity list
 	private int updateCount;
 	private boolean startedTimer;
-	
+	private boolean aborted; // Set true if we abort due to concurrent modification
+
 	private EntityGroup currentGroup;
 	private EntityObject currentObject;
 	private Iterator<EntityGroup> groupIterator;
@@ -34,13 +35,19 @@ public class EntityIteratorTimed implements Iterator<EntityObject> {
 		this.groupIterator = list.getGroupIterator();
 		this.remainingCount = 0;
 		this.startedTimer = false;
+		this.aborted = false;
 	}
 	
 	@Override
 	public boolean hasNext() {
-		if(currentAge != list.age)
-			throw new ConcurrentModificationException("List modified before going to next entry.");
-		if(remainingCount > 0 && !entityList.isEmpty())
+		if(aborted)
+			return false;
+		if(currentAge != list.age) {
+			// Instead of throwing CME, gracefully abort iteration
+			abortIteration();
+			return false;
+		}
+		if(remainingCount > 0 && entityList != null && !entityList.isEmpty())
 			return true;
 		
 		//Find next group and end timer on current group
@@ -66,8 +73,6 @@ public class EntityIteratorTimed implements Iterator<EntityObject> {
 				continue;
 			}
 			
-			//currentOffset = 0;
-			//remainingCount = entityList.size();
 			currentOffset = currentGroup.timedGroup.startUpdateObjects();
 			remainingCount = currentGroup.timedGroup.getUpdateCount();
 			updateCount = 0;
@@ -76,10 +81,34 @@ public class EntityIteratorTimed implements Iterator<EntityObject> {
 		return true;
 	}
 
+	private void abortIteration() {
+		if(!aborted) {
+			aborted = true;
+			if(startedTimer && currentGroup != null) {
+				try {
+					currentGroup.timedGroup.endUpdateObjects(updateCount);
+					currentGroup.timedGroup.endTimer();
+				} catch(Throwable ignored) {}
+			}
+			if(TickDynamicMod.debug)
+				System.out.println("[TickDynamic] Aborting timed entity iteration due to concurrent modification.");
+			TickDynamicMod.entityFallbackEvents++;
+			if(!TickDynamicMod.autoEntitySafeTriggered && TickDynamicMod.entityFallbackEvents >= TickDynamicMod.autoSafeEntityThreshold) {
+				TickDynamicMod.autoEntitySafeTriggered = true;
+				TickDynamicMod.safeEntityIteration = true;
+				System.out.println("[TickDynamic] Auto-enabled safe entity iteration mode after " + TickDynamicMod.entityFallbackEvents + " fallback events.");
+			}
+		}
+	}
+
 	@Override
 	public EntityObject next() {
-		if(currentAge != list.age)
-			throw new ConcurrentModificationException("List modified before going to next entry");
+		if(aborted)
+			throw new NoSuchElementException();
+		if(currentAge != list.age) {
+			abortIteration();
+			throw new NoSuchElementException();
+		}
 		if(!hasNext()) //hasNext will also setup next group if necessary(Usually called before next anyway)
 			throw new NoSuchElementException();
 		
@@ -102,24 +131,23 @@ public class EntityIteratorTimed implements Iterator<EntityObject> {
 	
 	@Override
 	public void remove() {
-		if(currentAge != list.age)
-			throw new ConcurrentModificationException("List modified before going to next entry");
+		if(aborted)
+			return;
+		if(currentAge != list.age) {
+			abortIteration();
+			return;
+		}
 		if(currentObject == null)
 			return;
 		
-		//Remove while maintaining the Iterator integrity and position
-		if(list.remove(currentObject))
-		{
-			currentAge++;
+		if(list.remove(currentObject)) {
+			currentAge++; // stay in sync but won't abort now since we incremented our view
 			currentOffset--;
+		} else if(TickDynamicMod.debug) {
+			System.err.println("[TickDynamic] Failed iterator remove for object: " + currentObject);
 		}
-		else
-			System.err.println("Failed to remove: " + currentObject + " from loaded entity list!");
-		
-		if(currentAge != list.age)
-			throw new RuntimeException("ASSERT FAILED: " + currentAge + " : " + list.age);
-		
-		if(currentOffset < 0) //If we removed the first element
+
+		if(currentOffset < 0)
 			currentOffset = 0;
 	}
 

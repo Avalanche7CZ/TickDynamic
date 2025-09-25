@@ -1,16 +1,11 @@
 package com.wildex999.tickdynamic.listinject;
 
-import java.lang.reflect.Field;
-import java.util.Collection;
+import java.util.ConcurrentModificationException;
 import java.util.Iterator;
-import java.util.List;
-import java.util.ListIterator;
 
 import com.wildex999.tickdynamic.TickDynamicMod;
 
 import net.minecraft.world.World;
-
-//The World Entities loop does not use iterators, so we have to handle it specially
 
 public class ListManagerEntities extends ListManager {
 
@@ -25,56 +20,71 @@ public class ListManagerEntities extends ListManager {
 		profiler = (CustomProfiler)world.theProfiler;
 	}
 	
-	
 	@Override
 	public int size() {
-		if(profiler.stage == CustomProfiler.Stage.None || profiler.stage == CustomProfiler.Stage.InTick 
+		if(TickDynamicMod.safeEntityIteration || TickDynamicMod.disableEntityTimeSlicing) {
+			updateStarted = false;
+			entityIterator = null;
+			return super.size();
+		}
+		if(profiler.stage == CustomProfiler.Stage.None || profiler.stage == CustomProfiler.Stage.InTick
 				|| profiler.stage == CustomProfiler.Stage.BeforeLoop || profiler.stage == CustomProfiler.Stage.InRemove)
 			return super.size();
 
 		if(!updateStarted) {
 			updateStarted = true;
-			
 			entityIterator = new EntityIteratorTimed(this, this.getAge());
 		}
 		
-		//Verify we have a next element to move on to
-		if(!entityIterator.hasNext())
-		{
+		try {
+			if(entityIterator == null || !entityIterator.hasNext()) {
+				updateStarted = false;
+				profiler.stage = CustomProfiler.Stage.InLoop;
+				return 0;
+			}
+		} catch(ConcurrentModificationException cme) {
+			if(mod.debug)
+				System.out.println("[TickDynamic] Concurrent modification detected during size(); ending timed iteration early.");
 			updateStarted = false;
-			profiler.stage = CustomProfiler.Stage.InLoop; //Make sure were at the stage where we can continue to TileEntities
-			return 0; //Should end
+			profiler.stage = CustomProfiler.Stage.InLoop;
+			return 0;
 		}
-
 		return super.size();
 	}
 	
 	@Override
 	public EntityObject get(int index) {
+		if(TickDynamicMod.safeEntityIteration || TickDynamicMod.disableEntityTimeSlicing)
+			return super.get(index);
 		if(!updateStarted || profiler.stage == CustomProfiler.Stage.InTick)
 			return super.get(index);
-		
+		if(entityIterator == null || !entityIterator.hasNext()) {
+			updateStarted = false;
+			if(mod.debug)
+				System.out.println("[TickDynamic] Timed entity iterator exhausted early; falling back to raw list access (index="+index+")");
+			int size = super.size();
+			if(size == 0) return null;
+			if(index >= size) index = size - 1;
+			return super.get(index);
+		}
 		lastObj = entityIterator.next();
 		return lastObj;
 	}
 	
 	@Override
 	public EntityObject remove(int index) {
+		if(TickDynamicMod.safeEntityIteration || TickDynamicMod.disableEntityTimeSlicing)
+			return super.remove(index);
 		if(!updateStarted || profiler.stage != CustomProfiler.Stage.InRemove)
 			return super.remove(index);
-		
-		//Fast remove the current Entity
+		if(entityIterator == null || (!entityIterator.hasNext() && lastObj == null))
+			return super.remove(index);
 		entityIterator.remove();
 		return lastObj;
 	}
 	
-	
-	//Return correct Iterator depending on current stage
 	@Override
 	public Iterator<EntityObject> iterator() {
-        //For now, we know the tick loop doesn't use iterator, so we just return a normal one
 		return super.iterator();
 	}
-	
-
 }

@@ -53,7 +53,7 @@ public class WorldEventHandler {
     @SubscribeEvent(priority = EventPriority.HIGHEST)
     public void onDimensionLoad(WorldEvent.Load event)
     {
-    	if(event.world.isRemote)
+    	if(TickDynamicMod.isRemote(event.world))
     		return;
     	
     	//Register our own Entity List manager, copying over any existing Entities
@@ -97,14 +97,14 @@ public class WorldEventHandler {
     @SubscribeEvent(priority = EventPriority.LOWEST)
     public void onDimensionUnload(WorldEvent.Unload event)
     {
-    	if(event.world == null || event.world.isRemote)
+    	if(event.world == null || TickDynamicMod.isRemote(event.world))
     		return;
     	
     	if(mod.debug)
     		System.out.println("TickDynamic unloading injected lists for world: " + event.world.provider.getDimensionName());
     	
     	try {
-        	CustomProfiler customProfiler = (CustomProfiler)event.world.theProfiler;
+    		CustomProfiler customProfiler = (CustomProfiler)event.world.theProfiler;
 			setCustomProfiler(event.world, customProfiler.original);
 		} catch (Exception e) {
 			System.err.println("Failed to revert World Profiler to original");

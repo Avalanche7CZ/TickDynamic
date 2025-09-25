@@ -47,7 +47,8 @@ public class CommandHandler implements ICommand {
 		subCommandHandlers.put("listworlds", new CommandListWorlds(mod));
 		subCommandHandlers.put("world", new CommandWorld(mod));
 		subCommandHandlers.put("enabled", new CommandEnabled(mod));
-		
+		subCommandHandlers.put("identify", new CommandIdentify(mod));
+
 		StringBuilder builderSubCommands = new StringBuilder();
 		SubCommands[] subs = SubCommands.values();
 		for(SubCommands command : subs) {
@@ -85,15 +86,11 @@ public class CommandHandler implements ICommand {
 			
 			sender.addChatMessage(new ChatComponentText("Average TPS: " + getTPSFormatted(mod) + " TPS"));
 			return;
-		} else if(args[0].equals("identify")) {
-			sender.addChatMessage(new ChatComponentText("Command not yet implemented! This will allow you to check what group a Tile or Entity belongs to by right clicking it.(And other info, like TPS)"));
-			return;
 		} else if(args[0].equals("help")) {
 			sender.addChatMessage(new ChatComponentText("You can find the documentation over at http://mods.stjerncraft.com/tickdynamic"));
 			return;
 		}
 		
-		//Send it over to subCommand handler
 		ICommand subHandler = subCommandHandlers.get(args[0]);
 		if(subHandler == null)
 		{
@@ -102,7 +99,6 @@ public class CommandHandler implements ICommand {
 		}
 		subHandler.processCommand(sender, args);
 	}
-
 
 	@Override
 	public boolean canCommandSenderUseCommand(ICommandSender sender) {
@@ -126,7 +122,6 @@ public class CommandHandler implements ICommand {
 		}
 		else
 		{
-			//Send it over to subCommand handler
 			ICommand subHandler = subCommandHandlers.get(args[0]);
 			if(subHandler == null)
 				return null;
@@ -136,7 +131,6 @@ public class CommandHandler implements ICommand {
 
 	@Override
 	public boolean isUsernameIndex(String[] args, int index) {
-		//TODO: Pass on to subCommand
 		return false;
 	}
 	
