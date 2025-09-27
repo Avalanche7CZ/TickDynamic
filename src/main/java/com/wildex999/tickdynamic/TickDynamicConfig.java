@@ -1,7 +1,6 @@
 package com.wildex999.tickdynamic;
 
 import java.util.ArrayList;
-import java.util.Map.Entry;
 import java.util.Set;
 
 import net.minecraft.entity.player.EntityPlayer;
@@ -10,7 +9,6 @@ import net.minecraft.world.WorldServer;
 import net.minecraftforge.common.DimensionManager;
 import net.minecraftforge.common.config.ConfigCategory;
 import net.minecraftforge.common.config.Configuration;
-import net.minecraftforge.common.config.Property;
 
 import com.wildex999.tickdynamic.listinject.EntityGroup;
 import com.wildex999.tickdynamic.listinject.EntityType;
@@ -18,279 +16,209 @@ import com.wildex999.tickdynamic.listinject.ListManager;
 import com.wildex999.tickdynamic.timemanager.ITimed;
 import com.wildex999.tickdynamic.timemanager.TimeManager;
 import com.wildex999.tickdynamic.timemanager.TimedEntities;
-import com.wildex999.tickdynamic.timemanager.TimedGroup;
 
 public class TickDynamicConfig {
-	
-	public static void loadConfig(TickDynamicMod mod, boolean groups) {
-		//mod.config.load();
-    	mod.config = new Configuration(mod.config.getConfigFile());
-		
-    	//--GENERAL CONFIG--
-		mod.config.getCategory("general");
-		mod.config.setCategoryComment("general", "WEBSITE: http://mods.stjerncraft.com/tickdynamic   <- Head here for the documentation, if you have problems or if you have questions."
-    			+ "\n\n"
-    			+ "Slices are the way you control the time allotment to each world, and within each world, to Entities and TileEntities.\n"
-    			+ "Each tick the time for a tick(By default 50ms) will be distributed among all the worlds, according to how many slices they have.\n"
-    			+ "If you have 3 worlds, each with 100 slices, then each world will get 100/300 = ~33% of the time.\n"
-    			+ "So you can thus give the Overworld a maxSlices of 300, while giving the other two 100 each. This way the Overworld will get 60% of the time.\n"
-    			+ "\n"
-    			+ "Of the time given to the world, this is further distributed to TileEntities and Entities according to their slices, the same way.\n"
-    			+ "TileEntities and Entities are given a portion of the time first given to the world, so their slices are only relative to each other within that world."
-    			+ "If any group has unused time, then that time will be distributed to the remaining groups.\n"
-    			+ "So even if you give 1000 slices to TileEntities and 100 to Entities, as long as as TileEntities aren't using it's full time,\n"
-    			+ "Entities will be able to use more than 100 slices of time.\n"
-    			+ "\n"
-    			+ "So the formula for slices to time percentage is: (singleGroupInWorld.maxSlices/combinedGroupsInWorld.maxSlices)*100\n"
-    			+ "\n"
-    			+ "Note: maxSlices = 0 has a special meaning. It means that the group's time usage is accounted for, but not limited.\n"
-    			+ "Basically it can take all the time it needs, even if it goes above the parent maxTime, pushing its siblings down to minimumObjects.");
-    	
-		mod.enabled = mod.config.get("general", "enabled", true, "").getBoolean();
-    	
-		mod.debug = mod.config.get("general", "debug", mod.debug, "Debug output. Warning: Might output a lot of data to console!").getBoolean();
-		
-		mod.debugGroups = mod.config.get("general", "debugGroups", mod.debugGroups, "Debug Group mapping and assignment. Will spam during world load and config reload!!!").getBoolean();
-		
-		mod.debugTimer = mod.config.get("general", "debugTimer", mod.debugTimer, "Debug output from time allocation and calculation. Warning: Setting this to true will cause a lot of console spam.\n"
-    			+ "Only do it if developer or someone else asks for the output!").getBoolean();
-    	
-		mod.defaultWorldSlicesMax = mod.config.get("general", "defaultWorldSlicesMax", mod.defaultWorldSlicesMax, "The default maxSlices for a new automatically added world.").getInt();
-    	
-		mod.defaultAverageTicks = mod.config.get("general", "averageTicks", mod.defaultAverageTicks, "How many ticks of data to use when averaging for time balancing.\n"
-    			+ "A higher number will make it take regular spikes into account, however will make it slower to adjust to changes.").getInt();
-    	
-    	//-- WORLDS CONFIG --
-		mod.defaultTickTime = mod.config.get("worlds", "tickTime", mod.defaultTickTime, "The time allotted to a tick in milliseconds. 20 Ticks per second means 50ms per tick.\n"
-    			+ "This is the base time allotment it will use when balancing the time usage between worlds and objects.\n"
-    			+ "You can set this to less than 50ms if you want to leave a bit of buffer time for other things, or don't want to use 100% cpu.").getInt();
+    public static void loadConfig(TickDynamicMod mod, boolean groups) {
+        // Preserve existing Configuration instance to avoid discarding unsaved queued changes.
+        if(mod.config != null) {
+            try { mod.config.load(); } catch(Exception ignored) {}
+        }
+        mod.config.getCategory("general");
+        mod.config.setCategoryComment("general", "TickDynamic core settings");
+        mod.enabled = mod.config.get("general", "enabled", true, "Master enable/disable").getBoolean();
+        mod.debug = mod.config.get("general", "debug", mod.debug, "General debug output").getBoolean();
+        mod.debugGroups = mod.config.get("general", "debugGroups", mod.debugGroups, "Debug group mapping").getBoolean();
+        mod.debugTimer = mod.config.get("general", "debugTimer", mod.debugTimer, "Debug timer output").getBoolean();
+        // New: allow disabling remote version checker
+        mod.versionCheckEnabled = mod.config.get("general", "versionCheckEnabled", mod.versionCheckEnabled, "Enable remote version check on server start (can also be set with -Dtickdynamic.versionCheck.enabled=false)").getBoolean(mod.versionCheckEnabled);
+        mod.defaultWorldSlicesMax = mod.config.get("general", "defaultWorldSlicesMax", mod.defaultWorldSlicesMax, "Default world sliceMax").getInt();
+        mod.defaultAverageTicks = mod.config.get("general", "averageTicks", mod.defaultAverageTicks, "Ticks used when averaging time").getInt();
+        mod.activationTpsThreshold = mod.config.get("general", "activationTpsThreshold", mod.activationTpsThreshold, "If >0 dynamic limiting only active below this TPS").getDouble(mod.activationTpsThreshold);
+        mod.activationTpsActivateBelow = mod.config.get("general", "dynamicHysteresisActivateBelow", mod.activationTpsActivateBelow, "If >0 with dynamicHysteresisDeactivateAbove set higher, dynamic balancing activates when TPS falls below this (hysteresis mode).\nSet both to 0 to disable hysteresis.").getDouble(mod.activationTpsActivateBelow);
+        mod.activationTpsDeactivateAbove = mod.config.get("general", "dynamicHysteresisDeactivateAbove", mod.activationTpsDeactivateAbove, "Upper hysteresis bound: dynamic balancing deactivates when TPS rises above this. Must be higher than dynamicHysteresisActivateBelow.").getDouble(mod.activationTpsDeactivateAbove);
+        mod.colorHysteresisMarginPercent = mod.config.get("general", "colorHysteresisMarginPercent", mod.colorHysteresisMarginPercent, "Margin applied to percent color bands to reduce flicker (e.g. 2.0 = 2%). Set 0 to disable. Recommended 0-3.").getDouble(mod.colorHysteresisMarginPercent);
+        // Clamp values to sane ranges
+        if(mod.activationTpsActivateBelow < 0) mod.activationTpsActivateBelow = 0;
+        if(mod.activationTpsDeactivateAbove < 0) mod.activationTpsDeactivateAbove = 0;
+        if(mod.colorHysteresisMarginPercent < 0) mod.colorHysteresisMarginPercent = 0;
+        if(mod.colorHysteresisMarginPercent > 20) mod.colorHysteresisMarginPercent = 20; // hard cap
+        // If ordering invalid, disable hysteresis gracefully
+        if(!(mod.activationTpsActivateBelow > 0 && mod.activationTpsDeactivateAbove > mod.activationTpsActivateBelow)) {
+            mod.activationTpsActivateBelow = 0;
+            mod.activationTpsDeactivateAbove = 0;
+        }
+        // Initialize dynamicActive for hysteresis: start inactive if hysteresis configured
+        if(mod.activationTpsActivateBelow > 0 && mod.activationTpsDeactivateAbove > mod.activationTpsActivateBelow) mod.dynamicActive = false; else if(mod.activationTpsThreshold <= 0) mod.dynamicActive = true;
 
-    	//-- GROUPS CONFIG --
-		/*
-		mod.config.setCategoryComment(mod.configCategoryDefaultEntities, "The default values for Entities in a world, which does not belong to any other group.");
-		mod.defaultEntitySlicesMax = mod.config.get(mod.configCategoryDefaultEntities, TimedGroup.configKeySlicesMax, mod.defaultEntitySlicesMax, 
-    			"The number of time slices given to the group.").getInt();
-		mod.defaultEntityMinimumObjects = mod.config.get(mod.configCategoryDefaultEntities, TimedGroup.configKeyMinimumObjects, mod.defaultEntityMinimumObjects, 
-    			"The minimum number of Entities to update per tick, independent of time given.").getInt();
-    	
-		mod.config.setCategoryComment(mod.configCategoryDefaultTileEntities, "The default values for TileEntities in a world, which does not belong to any other group.");
-		mod.defaultTileEntitySlicesMax = mod.config.get(mod.configCategoryDefaultTileEntities, TimedGroup.configKeySlicesMax, mod.defaultTileEntitySlicesMax, 
-    			"The number of time slices given to the group.").getInt();
-		mod.defaultTileEntityMinimumObjects = mod.config.get(mod.configCategoryDefaultTileEntities, TimedGroup.configKeyMinimumObjects, mod.defaultTileEntityMinimumObjects, 
-    			"The minimum number of TileEntities to update per tick, independent of time given.").getInt();*/
-    	
-		//Load New, Reload and Remove old groups
-		if(groups)
-		{
-			loadGlobalGroups(mod);
+        mod.defaultTickTime = mod.config.get("worlds", "tickTime", mod.defaultTickTime, "Target tick time ms").getInt();
 
-			//Default example for Entities and TileEntities in dim0(Overworld)
-			if(!mod.config.hasCategory("worlds.dim0.entity"))
-			{
-				mod.config.get("worlds.dim0.entity", ITimed.configKeySlicesMax, mod.defaultEntitySlicesMax);
-				mod.config.get("worlds.dim0.entity", EntityGroup.config_groupType, EntityType.Entity.toString());
-			}
-			if(!mod.config.hasCategory("worlds.dim0.tileentity"))
-			{
-				mod.config.get("worlds.dim0.tileentity", ITimed.configKeySlicesMax, mod.defaultEntitySlicesMax);
-				mod.config.get("worlds.dim0.tileentity", EntityGroup.config_groupType, EntityType.TileEntity.toString());
-			}
+        // Web dashboard configuration
+        mod.config.getCategory("web");
+        mod.config.setCategoryComment("web", "Web dashboard (experimental).\nSet bind to 127.0.0.1 to allow local-only access or 0.0.0.0 to listen on all interfaces.\nIf token is non-empty, clients must provide ?token=VALUE or X-Auth-Token header.");
+        boolean prevWebEnabled = mod.webEnabled;
+        String prevBind = mod.webBind;
+        int prevPort = mod.webPort;
+        String prevToken = mod.webToken;
+        mod.webEnabled = mod.config.get("web", "enabled", mod.webEnabled, "Enable web dashboard HTTP server").getBoolean(mod.webEnabled);
+        mod.webBind = mod.config.get("web", "bind", mod.webBind, "Bind address (e.g. 127.0.0.1 for local-only, 0.0.0.0 for all interfaces)").getString();
+        mod.webPort = mod.config.get("web", "port", mod.webPort > 0 ? mod.webPort : 9777, "TCP port for dashboard").getInt();
+        mod.webToken = mod.config.get("web", "token", mod.webToken, "Optional access token; leave blank to disable auth").getString();
+        if(mod.webPort < 1 || mod.webPort > 65535) mod.webPort = 9777;
+        // Hot-apply web changes if server is running
+        if(mod.server != null) {
+            boolean changed = (prevWebEnabled != mod.webEnabled) ||
+                              (mod.webEnabled && (!safeEq(prevBind, mod.webBind) || prevPort != mod.webPort || !safeEq(prevToken, mod.webToken)));
+            if(changed) {
+                if(mod.webServer != null) { try { mod.webServer.stop(); } catch(Exception ignore) {} mod.webServer = null; }
+                if(mod.webEnabled) {
+                    try {
+                        mod.webServer = new com.wildex999.tickdynamic.web.WebServer(mod, mod.webBind, mod.webPort, mod.webToken);
+                        mod.webServer.start();
+                        System.out.println("[TickDynamic][Web] Restarted on http://"+mod.webBind+":"+mod.webPort+" (token "+(mod.webToken.isEmpty()?"disabled":"enabled")+")");
+                    } catch(Exception ex) {
+                        System.err.println("[TickDynamic][Web] Failed to start web dashboard: " + ex.getMessage());
+                        ex.printStackTrace();
+                        mod.webServer = null;
+                        mod.webEnabled = false;
+                    }
+                } else {
+                    System.out.println("[TickDynamic][Web] Disabled via config.");
+                }
+            }
+        }
 
-			//Reload local groups
-			WorldServer[] worlds = DimensionManager.getWorlds();
-			for(WorldServer world : worlds) {
-				if(mod.debug)
-					System.out.println("Reloading " + world.provider.getDimensionName());
+        mod.config.getCategory("c2me");
+        mod.config.setCategoryComment("c2me", "Lightweight chunk prefetch (NOT full async) – spreads generation cost earlier while TPS is healthy.");
+        boolean prevEnabled = mod.c2meEnabled;
+        mod.c2meEnabled = mod.config.get("c2me", "enabled", mod.c2meEnabled, "Enable chunk prefetch system").getBoolean();
+        mod.c2mePrefetchRadius = mod.config.get("c2me", "prefetchRadius", mod.c2mePrefetchRadius, "Chunks beyond view distance to prefetch (0 disables)").getInt();
+        mod.c2mePrefetchPerTick = mod.config.get("c2me", "prefetchPerTick", mod.c2mePrefetchPerTick, "Max chunks to prefetch per tick").getInt();
+        mod.c2mePrefetchMinTps = mod.config.get("c2me", "prefetchMinTps", mod.c2mePrefetchMinTps, "Only prefetch while TPS >= this").getDouble(mod.c2mePrefetchMinTps);
+        mod.c2meDebug = mod.config.get("c2me", "debug", mod.c2meDebug, "Extra logging for prefetch").getBoolean();
+        String[] dimWL = mod.config.get("c2me", "dimensionWhitelist", new String[0], "Optional dimension id whitelist; empty = all").getStringList();
+        mod.c2meDimensionWhitelist = dimWL;
+        // Clamp C2ME values
+        if(mod.c2mePrefetchRadius < 0) mod.c2mePrefetchRadius = 0; else if(mod.c2mePrefetchRadius > 64) mod.c2mePrefetchRadius = 64;
+        if(mod.c2mePrefetchPerTick < 0) mod.c2mePrefetchPerTick = 0; else if(mod.c2mePrefetchPerTick > 500) mod.c2mePrefetchPerTick = 500;
+        if(mod.c2mePrefetchMinTps < 0) mod.c2mePrefetchMinTps = 0; else if(mod.c2mePrefetchMinTps > 20) mod.c2mePrefetchMinTps = 20;
+        if(prevEnabled != mod.c2meEnabled) {
+            if(mod.c2meEnabled && mod.c2meManager == null) mod.c2meManager = new com.wildex999.tickdynamic.c2me.C2MEManager(mod);
+            else if(!mod.c2meEnabled && mod.c2meManager != null) { mod.c2meManager.shutdown(); mod.c2meManager = null; }
+        }
 
-				if(world.loadedEntityList instanceof ListManager) {
-					ListManager entityList = (ListManager)world.loadedEntityList;
-					if(mod.debug)
-						System.out.println("Reloading " + entityList.size() + " Entities...");
-					entityList.reloadGroups();
-				}
-				if(world.loadedTileEntityList instanceof ListManager) {
-					ListManager tileList = (ListManager)world.loadedTileEntityList;
-					if(mod.debug)
-						System.out.println("Reloading " + tileList.size() + " TileEntities...");
-					tileList.reloadGroups();
-				}
-			}
+        // Isolated balancing configuration (player-weight fairness and extras)
+        mod.config.getCategory("isolated");
+        mod.config.setCategoryComment("isolated", "Per-dimension balancing with player weighting and protections.");
+        mod.isolatedMode = mod.config.get("isolated", "enabled", mod.isolatedMode, "Enable isolated per-dimension balancing").getBoolean(mod.isolatedMode);
+        mod.isolatedSkipNoPlayers = mod.config.get("isolated", "skipNoPlayers", mod.isolatedSkipNoPlayers, "Skip worlds with no players (weight=0)").getBoolean(mod.isolatedSkipNoPlayers);
+        mod.isolatedPlayerWeight = mod.config.get("isolated", "playerWeight", mod.isolatedPlayerWeight, "Weight budgets by player count").getBoolean(mod.isolatedPlayerWeight);
+        mod.isolatedPlayerWeightScale = mod.config.get("isolated", "playerWeightScale", mod.isolatedPlayerWeightScale, "Weight scale per player (weight = 1 + players*scale)").getDouble(mod.isolatedPlayerWeightScale);
+        mod.isolatedPlayerWeightMax = mod.config.get("isolated", "playerWeightMax", mod.isolatedPlayerWeightMax, "Clamp for player-weight multiplier").getDouble(mod.isolatedPlayerWeightMax);
+        mod.isolatedProtectSpecial = mod.config.get("isolated", "protectSpecial", mod.isolatedProtectSpecial, "Treat special worlds as protected").getBoolean(mod.isolatedProtectSpecial);
+        // Extra: reduce weight for worlds with zero TileEntities even if players are present
+        mod.isolatedLessIfNoTiles = mod.config.get("isolated", "lessIfNoTiles", mod.isolatedLessIfNoTiles, "Reduce world weight if it has zero TileEntities loaded").getBoolean(mod.isolatedLessIfNoTiles);
+        mod.isolatedNoTilesFactor = mod.config.get("isolated", "noTilesFactor", mod.isolatedNoTilesFactor, "Factor to apply to world weight when it has zero TEs (0.0-1.0)").getDouble(mod.isolatedNoTilesFactor);
 
-			if(mod.debug)
-				System.out.println("Done reloading worlds");
+        // Offender-first deprioritization config
+        mod.config.getCategory("offender");
+        mod.config.setCategoryComment("offender", "TileEntity offender deprioritization (graceful, intensity-aware)");
+        mod.tileOffenderDeprioritize = mod.config.get("offender", "enabled", mod.tileOffenderDeprioritize, "Enable offender-first TE deprioritization").getBoolean(mod.tileOffenderDeprioritize);
+        mod.tileOffenderTop = mod.config.get("offender", "top", mod.tileOffenderTop, "Max offenders to consider per dimension").getInt(mod.tileOffenderTop);
+        mod.tileOffenderMinMs = mod.config.get("offender", "minMs", mod.tileOffenderMinMs, "Minimum total time (ms) to consider as offender").getDouble(mod.tileOffenderMinMs);
+        mod.tileOffenderMaxPerChunk = mod.config.get("offender", "maxPerChunk", mod.tileOffenderMaxPerChunk, "Max penalized offenders per chunk").getInt(mod.tileOffenderMaxPerChunk);
+        mod.tileOffenderSkipEvery = mod.config.get("offender", "skipEvery", mod.tileOffenderSkipEvery, "Every Nth tick do not skip (cadence)").getInt(mod.tileOffenderSkipEvery);
+        mod.tileOffenderPenaltyUp = mod.config.get("offender", "penaltyUp", mod.tileOffenderPenaltyUp, "Penalty ramp-up per tick (severity-scaled)").getDouble(mod.tileOffenderPenaltyUp);
+        mod.tileOffenderPenaltyDown = mod.config.get("offender", "penaltyDown", mod.tileOffenderPenaltyDown, "Penalty decay per tick").getDouble(mod.tileOffenderPenaltyDown);
+        mod.tileOffenderSkipMinPenalty = mod.config.get("offender", "skipMinPenalty", mod.tileOffenderSkipMinPenalty, "Minimum penalty before skipping applies").getDouble(mod.tileOffenderSkipMinPenalty);
+        mod.tileOffenderControllerGain = mod.config.get("offender", "controllerGain", mod.tileOffenderControllerGain, "Gain scaling with tick error (ms)").getDouble(mod.tileOffenderControllerGain);
+        mod.tileOffenderControllerMin = mod.config.get("offender", "controllerMin", mod.tileOffenderControllerMin, "Minimum gain when active").getDouble(mod.tileOffenderControllerMin);
+        mod.tileOffenderControllerMax = mod.config.get("offender", "controllerMax", mod.tileOffenderControllerMax, "Maximum gain when active").getDouble(mod.tileOffenderControllerMax);
+        mod.tileOffenderGlobalCapPercent = mod.config.get("offender", "globalCapPercent", mod.tileOffenderGlobalCapPercent, "Max fraction of TEs penalized (0.0-1.0)").getDouble(mod.tileOffenderGlobalCapPercent);
+        mod.tileOffenderNearPlayerRadius = mod.config.get("offender", "nearPlayerRadius", mod.tileOffenderNearPlayerRadius, "Radius for near-player bias").getInt(mod.tileOffenderNearPlayerRadius);
+        mod.tileOffenderNearPlayerBias = mod.config.get("offender", "nearPlayerBias", mod.tileOffenderNearPlayerBias, "Multiplier for skip probability near players (0.0-1.0)").getDouble(mod.tileOffenderNearPlayerBias);
+        mod.tileOffenderExcludeClassRegex = mod.config.get("offender", "excludeClassRegex", mod.tileOffenderExcludeClassRegex, "Regex for TE classes to exclude from penalization").getString();
+        try { mod.tileOffenderExcludeClassPattern = (mod.tileOffenderExcludeClassRegex==null||mod.tileOffenderExcludeClassRegex.trim().isEmpty())?null:java.util.regex.Pattern.compile(mod.tileOffenderExcludeClassRegex); } catch(Throwable t){ mod.tileOffenderExcludeClassPattern=null; }
 
-			//Reload Timed
-			for(ITimed timed : mod.timedObjects.values())
-			{
-				if(timed instanceof TimedEntities)
-				{
-					TimedEntities timedGroup = (TimedEntities)timed;
-					if(!timedGroup.getEntityGroup().valid) {
-						mod.timedObjects.remove(timedGroup);
-						continue;
-					}
-				}
-				timed.loadConfig(false);
-			}
+        if(groups) {
+            loadGlobalGroups(mod);
+            if(!mod.config.hasCategory("worlds.dim0.entity")) {
+                mod.config.get("worlds.dim0.entity", ITimed.configKeySlicesMax, mod.defaultEntitySlicesMax);
+                mod.config.get("worlds.dim0.entity", EntityGroup.config_groupType, EntityType.Entity.toString());
+            }
+            if(!mod.config.hasCategory("worlds.dim0.tileentity")) {
+                mod.config.get("worlds.dim0.tileentity", ITimed.configKeySlicesMax, mod.defaultEntitySlicesMax);
+                mod.config.get("worlds.dim0.tileentity", EntityGroup.config_groupType, EntityType.TileEntity.toString());
+            }
+            WorldServer[] worlds = DimensionManager.getWorlds();
+            for(WorldServer w : worlds) {
+                if(mod.debug) System.out.println("Reloading "+w.provider.getDimensionName());
+                if(w.loadedEntityList instanceof ListManager) ((ListManager)w.loadedEntityList).reloadGroups();
+                if(w.loadedTileEntityList instanceof ListManager) ((ListManager)w.loadedTileEntityList).reloadGroups();
+            }
+            if(mod.debug) System.out.println("Done reloading worlds");
+            // Iterate over a snapshot to avoid ConcurrentModificationException when removing invalid timed objects
+            for(ITimed t : new ArrayList<ITimed>(mod.timedObjects.values())) {
+                if(t instanceof TimedEntities) {
+                    TimedEntities tg = (TimedEntities)t;
+                    if(!tg.getEntityGroup().valid) { mod.timedObjects.remove(tg); continue; }
+                }
+                t.loadConfig(false);
+            }
+            if(mod.root != null) mod.root.setTimeMax(mod.defaultTickTime * TimeManager.timeMilisecond);
+        } else {
+            // Non-group reload: still apply updated sliceMax & other per-timed settings
+            for(ITimed t : new ArrayList<ITimed>(mod.timedObjects.values())) {
+                t.loadConfig(false);
+            }
+            if(mod.root != null) mod.root.setTimeMax(mod.defaultTickTime * TimeManager.timeMilisecond);
+        }
+        mod.config.save();
+    }
 
-			if(mod.root != null)
-				mod.root.setTimeMax(mod.defaultTickTime * TimeManager.timeMilisecond);
-		}
-    	
-    	//Save any new defaults
-    	mod.config.save();
-	}
-	
-	//Load the config of Global Groups
-	public static void loadGlobalGroups(TickDynamicMod mod) {
+    public static void loadGlobalGroups(TickDynamicMod mod) {
+        mod.config.setCategoryComment("groups", "Global entity/tile groups");
+        loadDefaultGlobalGroups(mod); loadGroups(mod,"groups");
+    }
 
-		mod.config.setCategoryComment("groups", "Groups define a list of Entities and/or TileEntities and the configuration for them.\n"
-    			+ "You can define the groups here, and they will automatically be part of every world.\n"
-    			+ "\n"
-    			+ "If you wish to override the settings for a group in a specific world, you can simply include a group with the same name in the world,\n"
-    			+ "and then provide the new values. Any value you do not define will be read from the global group.\n"
-    			+ "So you can for example define a group for all Animal mobs, and define them to get less time than other Entities in all worlds,\n"
-    			+ "but then define them to get even less time in a certain world without having to re-define the list of Entities.\n"
-    			+ "\n"
-    			+ "Note that the groups 'entity' and 'tileentity' are special groups. Any TileEntity or Entity which are not included in any other group,\n"
-    			+ "will be automatically included in these two groups.");
-		
-		//Load/Create default entity and tileentity groups
-		loadDefaultGlobalGroups(mod);
-		
-		//Load Global groups
-		loadGroups(mod, "groups");
-	}
-	
-	//Load all groups under the given category
-	public static void loadGroups(TickDynamicMod mod, String category) {
-		ConfigCategory groupsCat = mod.config.getCategory(category);
-		Set<ConfigCategory> groups = groupsCat.getChildren();
-		
-		//Remove every group which is no longer in groups set
-		ArrayList<String> toRemove = new ArrayList<String>();
-		for(String groupPath : mod.entityGroups.keySet())
-		{
-			if(!groupPath.startsWith(category))
-				continue; //We only care about groups in the same category
-			
-			int nameIndex = groupPath.lastIndexOf(".");
-			String groupName;
-			if(nameIndex == -1)
-				groupName = groupPath;
-			else
-				groupName = groupPath.substring(nameIndex+1);
-			
-			boolean remove = true;
-			if(mod.config.hasCategory(groupPath))
-				remove = false;
-			
-			//Check if local copy of a global group
-			if(remove) {
-				EntityGroup entityGroup = mod.entityGroups.get(groupPath);
-				if(entityGroup != null && entityGroup.base != null) {
-					//Check if the global group still exists
-					if(mod.config.hasCategory("groups." + groupName))
-						remove = false;
-				}
-			}
-			
-			//Mark for removal after loop
-			if(remove)
-			{
+    public static void loadGroups(TickDynamicMod mod, String category) {
+        ConfigCategory cat = mod.config.getCategory(category);
+        Set<ConfigCategory> groups = cat.getChildren();
+        ArrayList<String> remove = new ArrayList<String>();
+        for(String gp : mod.entityGroups.keySet()) {
+            if(!gp.startsWith(category)) continue;
+            int idx = gp.lastIndexOf('.');
+            String gName = idx==-1?gp:gp.substring(idx+1);
+            boolean rem = !mod.config.hasCategory(gp);
+            if(rem) {
+                EntityGroup eg = mod.entityGroups.get(gp);
+                if(eg!=null && eg.base!=null && mod.config.hasCategory("groups."+gName)) rem=false;
+            }
+            if(rem) { if(mod.debug) System.out.println("Remove Group: "+gp); remove.add(gp);} }
+        for(String r: remove) { EntityGroup g = mod.entityGroups.remove(r); if(g!=null) g.valid=false; }
+        for(ConfigCategory gCat : groups) {
+            String path = category+"."+gCat.getName();
+            EntityGroup eg = mod.getEntityGroup(path);
+            if(eg==null) {
+                if(mod.debug) System.out.println("Loading group: "+path);
+                TimedEntities te = (TimedEntities)mod.getTimedGroup(path);
+                if(te==null) { te = new TimedEntities(mod,null,gCat.getName(),path,null); te.init(); }
+                EntityGroup newG = new EntityGroup(mod,null,te,gCat.getName(),path,EntityType.Entity,null);
+                mod.entityGroups.put(path,newG);
+                if(mod.debug) System.out.println("New Group: "+path);
+            }else if(mod.debug) System.out.println("Update Group: "+path);
+        }
+        for(EntityGroup eg : new ArrayList<EntityGroup>(mod.entityGroups.values())) {
+            if(eg.getName() == null) continue;
+            if(!eg.valid) continue;
+            if(!eg.getName().equals("entity") && !eg.getName().equals("players") && !eg.getName().equals("tileentity")) eg.readConfig(false);
+        }
+    }
 
-				if(mod.debug)
-					System.out.println("Remove Group: " + groupPath);
-				toRemove.add(groupPath);
-			}
-		}
-		
-		//Remove after due to ConcurrentException
-		for(String groupPath : toRemove) {
-			EntityGroup groupRemoved = mod.entityGroups.remove(groupPath);
-			if(groupRemoved != null)
-				groupRemoved.valid = false;
-		}
-		
-		//Load new groups
-		ArrayList<EntityGroup> updateGroups = new ArrayList<EntityGroup>();
-		for(ConfigCategory group : groups)
-		{
-			//Check if group already exists
-			String groupPath = category + "." + group.getName();
-			EntityGroup entityGroup = mod.getEntityGroup(groupPath);
-			if(entityGroup == null)
-			{
-				if(mod.debug)
-					System.out.println("Loading group: " + groupPath);
-				 
-				TimedEntities timedEntities = (TimedEntities) mod.getTimedGroup(groupPath);
-				if(timedEntities == null) {
-					timedEntities = new TimedEntities(mod, null, group.getName(), groupPath, null);
-					timedEntities.init();
-				}
-				
-				entityGroup = new EntityGroup(mod, null, timedEntities, group.getName(), groupPath, EntityType.Entity, null);
-				mod.entityGroups.put(groupPath, entityGroup);
-				if(mod.debug)
-					System.out.println("New Group: " + groupPath);
-			}
-			else
-			{
-				//Add to list of groups to update
-				updateGroups.add(entityGroup);
-				if(mod.debug)
-					System.out.println("Update Group: " + groupPath);
-			}
-		}
+    public static void loadDefaultGlobalGroups(TickDynamicMod mod) {
+        EntityGroup g; TimedEntities tg; String path;
+        path = "groups.entity"; g = mod.getEntityGroup(path); if(g==null){ tg=new TimedEntities(mod,null,"entity",path,null); tg.init(); g=new EntityGroup(mod,null,tg,"entity",path,EntityType.Entity,null); mod.entityGroups.put(path,g);}
+        path = "groups.players"; g=mod.getEntityGroup(path); if(g==null){ mod.config.get(path,TimedEntities.configKeySlicesMax,0); String[] cls={EntityPlayer.class.getName(),EntityPlayerMP.class.getName()}; mod.config.get(path,EntityGroup.config_classNames,cls); tg=new TimedEntities(mod,null,"players",path,null); tg.init(); g=new EntityGroup(mod,null,tg,"players",path,EntityType.Entity,null); mod.entityGroups.put(path,g);}
+        path = "groups.tileentity"; g=mod.getEntityGroup(path); if(g==null){ tg=new TimedEntities(mod,null,"tileentity",path,null); tg.init(); g=new EntityGroup(mod,null,tg,"tileentity",path,EntityType.TileEntity,null); mod.entityGroups.put(path,g);} }
 
-		//Update old
-		for(EntityGroup entityGroup : updateGroups)
-			entityGroup.readConfig(false);
-	}
-	
-	public static void loadDefaultGlobalGroups(TickDynamicMod mod) {
-		EntityGroup group;
-		TimedEntities timedGroup;
-		String groupPath;
-		
-		groupPath = "groups.entity";
-		group = mod.getEntityGroup(groupPath);
-		if(group == null)
-		{
-			timedGroup = new TimedEntities(mod, null, "entity", groupPath, null);
-			timedGroup.init();
-			group = new EntityGroup(mod, null, timedGroup, "entity", groupPath, EntityType.Entity, null);
-			mod.entityGroups.put(groupPath, group);
-		}
-		
-    	//Player group accounts the time used by players(Usually not limited, just used for accounting)
-		groupPath = "groups.players";
-		group = mod.getEntityGroup(groupPath);
-		if(group == null)
-		{
-			//Write new defaults before creating group
-			mod.config.get(groupPath, TimedEntities.configKeySlicesMax, 0); //No limit by default
-			String[] entityClasses = {EntityPlayer.class.getName(), EntityPlayerMP.class.getName()};
-			mod.config.get(groupPath, EntityGroup.config_classNames, entityClasses);
-			
-			timedGroup = new TimedEntities(mod, null, "players", groupPath, null);
-			timedGroup.init();
-			
-			group = new EntityGroup(mod, null, timedGroup, "players", groupPath, EntityType.Entity, null);
-			mod.entityGroups.put(groupPath, group);
-		}
-		
-		groupPath = "groups.tileentity";
-		group = mod.getEntityGroup(groupPath);
-		if(group == null)
-		{
-			timedGroup = new TimedEntities(mod, null, "tileentity", groupPath, null);
-			timedGroup.init();
-			group = new EntityGroup(mod, null, timedGroup, "tileentity", groupPath, EntityType.TileEntity, null);
-			mod.entityGroups.put(groupPath, group);
-		}
-		
-	}
-	
+    private static boolean safeEq(String a, String b) { return a==b || (a!=null && a.equals(b)); }
 }

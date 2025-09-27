@@ -20,6 +20,7 @@ import com.wildex999.tickdynamic.TickDynamicMod;
 import com.wildex999.tickdynamic.timemanager.TimedEntities;
 import com.wildex999.tickdynamic.timemanager.TimedGroup;
 import com.wildex999.tickdynamic.timemanager.TimedGroup.GroupType;
+import com.wildex999.tickdynamic.util.ModResolver;
 
 import cpw.mods.fml.common.registry.EntityRegistry;
 import cpw.mods.fml.common.registry.FMLControlledNamespacedRegistry;
@@ -33,7 +34,7 @@ public class EntityGroup {
 	public int currentGroupTime; //World time as seen by the entities in this group. Goes up when whole entities list is ticked.
 	public ArrayList<EntityObject> entities;
 	
-	private HashSet<Class> entityEntries; //List of Entity/TileEntity classes who belong to this group
+	private HashSet<Class<?>> entityEntries; //List of Entity/TileEntity classes who belong to this group
 	private boolean catchAll; //If true, can load any Entity/TileEntity into this group. Used for the default 'entity' & 'tileentity' groups
 	private boolean gotOwnEntries; //Set to true if our entries differ from base Group
 	
@@ -58,8 +59,8 @@ public class EntityGroup {
 	private boolean useCorrectedTime;
 	private EntityType groupType;
 	
-	private static Map<String, Class> tileNameToClassMap;
-	
+	private static Map<String, Class<?>> tileNameToClassMap;
+
 	static {
 		try {
 			tileNameToClassMap = ReflectionHelper.getPrivateValue(TileEntity.class, null, "nameToClassMap", "field_145855_i");
@@ -89,7 +90,7 @@ public class EntityGroup {
 		this.groupType = groupType;
 		
 		entities = new ArrayList<EntityObject>();
-		entityEntries = new HashSet<Class>();
+		entityEntries = new HashSet<Class<?>>();
 		list = null;
 		
 		if(base != null)
@@ -110,9 +111,17 @@ public class EntityGroup {
 	
 	//Read the config, but does not save defaults when created from a base Group
 	public void readConfig(boolean save) {
-		if(configEntry == null)
+		if(configEntry == null) {
+			// No per-world config: inherit key flags from base so groups stay enabled by default
+			if(base != null) {
+				this.enabled = base.enabled;
+				this.groupType = base.groupType;
+				this.useCorrectedTime = base.useCorrectedTime;
+				this.entityEntries = base.entityEntries; // share entries by default when no override
+			}
 			return;
-		
+		}
+
 		if(gotOwnEntries)
 			entityEntries.clear();
 		gotOwnEntries = false;
@@ -224,6 +233,10 @@ public class EntityGroup {
 	public void copy(EntityGroup other, boolean copyEntries) {
 		if(copyEntries)
 			entityEntries.addAll(other.entityEntries);
+		// Inherit key behavior flags so the group is usable by default without a per-world config
+		this.enabled = other.enabled;
+		this.groupType = other.groupType;
+		this.useCorrectedTime = other.useCorrectedTime;
 		//TODO: More? Assign if false?
 	}
 	
@@ -264,7 +277,7 @@ public class EntityGroup {
 	}
 	
 	//Get the list of Entity classes that are accepted into this group
-	public Set<Class> getEntityEntries() {
+	public Set<Class<?>> getEntityEntries() {
 		return entityEntries;
 	}
 	
@@ -280,7 +293,7 @@ public class EntityGroup {
 		
 		for(String name : names)
 		{
-			List<Class> tileClassList = loadTilesByName(name);
+			List<Class<?>> tileClassList = loadTilesByName(name);
 			if(tileClassList == null)
 			{
 				System.out.println("Failed to find Block with the name: " + name);
@@ -289,7 +302,7 @@ public class EntityGroup {
 			if(tileClassList.size() == 0)
 				continue;
 			
-			for(Class tileClass : tileClassList)
+			for(Class<?> tileClass : tileClassList)
 			{
 				if(entityEntries.contains(tileClass))
 					continue;
@@ -308,7 +321,7 @@ public class EntityGroup {
 
 		for(String name : names)
 		{
-			Class entityClass = loadEntityByName(name);
+			Class<?> entityClass = loadEntityByName(name);
 			if(entityClass == null)
 			{
 				System.out.println("Failed to find an Entity by the name: " + name);
@@ -323,7 +336,7 @@ public class EntityGroup {
 	}
 	
 	//A single name block might have multiple TileEntities(For the different metadata)
-	private List<Class> loadTilesByName(String name) {
+	private List<Class<?>> loadTilesByName(String name) {
 		FMLControlledNamespacedRegistry<Block> blockRegistry = GameData.getBlockRegistry();
 		Block block = blockRegistry.getRaw(name);
 		if(block == null)
@@ -331,8 +344,8 @@ public class EntityGroup {
 
 		//Get TileEntities for every metadata
 		TileEntity currentTile;
-		Class prevTile = null;
-		List<Class> tileClassList = new ArrayList<Class>(16);
+		Class<?> prevTile = null;
+		List<Class<?>> tileClassList = new ArrayList<Class<?>>(16);
 		for(byte b = 0; b < 16; b++)
 		{
 			if(block.hasTileEntity(b))
@@ -347,7 +360,7 @@ public class EntityGroup {
 					currentTile = null;
 				}
 				
-				Class cls = currentTile.getClass();
+				Class<?> cls = currentTile.getClass();
 				if(currentTile != null && cls != prevTile)
 				{
 					
@@ -361,8 +374,8 @@ public class EntityGroup {
 		return tileClassList;
 	}
 	
-	private Class loadEntityByName(String name) {
-		return (Class)EntityList.stringToClassMapping.get(name);
+	private Class<?> loadEntityByName(String name) {
+		return (Class<?>)EntityList.stringToClassMapping.get(name);
 	}
 	
 	//Load by class name
@@ -375,7 +388,7 @@ public class EntityGroup {
 		
 		for(String name : names)
 		{
-			Class entityClass = loadByClassName(name);
+			Class<?> entityClass = loadByClassName(name);
 			if(entityClass == null || !TileEntity.class.isAssignableFrom(entityClass))
 			{
 				System.out.println("Could not find TileEntity class with the name: " + name);
@@ -398,7 +411,7 @@ public class EntityGroup {
 		
 		for(String name : names)
 		{
-			Class entityClass = loadByClassName(name);
+			Class<?> entityClass = loadByClassName(name);
 			if(entityClass == null || !Entity.class.isAssignableFrom(entityClass))
 			{
 				System.out.println("Could not find Entity class with the name: " + name + " Class: " + entityClass);
@@ -413,7 +426,7 @@ public class EntityGroup {
 		}
 	}
 	
-	private Class loadByClassName(String name) {
+	private Class<?> loadByClassName(String name) {
 		try {
 			return Class.forName(name);
 		} catch(Exception e) {
@@ -442,32 +455,32 @@ public class EntityGroup {
 		
 		for(String name : names)
 		{
-			List<Class> classList = loadEntitiesByModName(name);
+			List<Class<?>> classList = loadEntitiesByModName(name);
 			entityEntries.addAll(classList);
 		}
 	}
 	
-	private List<Class> loadTilesByModName(String name) {
+	private List<Class<?>> loadTilesByModName(String name) {
 		if(tileNameToClassMap == null)
 			return null;
 		return loadClassesFromNamePrefix(tileNameToClassMap, name);
 	}
-	
-	private List<Class> loadEntitiesByModName(String name) {
+
+	private List<Class<?>> loadEntitiesByModName(String name) {
 		return loadClassesFromNamePrefix(EntityList.stringToClassMapping, name);
 	}
-	
-	private List<Class> loadClassesFromNamePrefix(Map<String, Class> nameToClassMap, String name) {
-		List<Class> classList = new ArrayList<Class>();
-		
-		Set<Entry<String, Class>> entries = nameToClassMap.entrySet();
-		Iterator<Entry<String, Class>> it = entries.iterator();
+
+	private List<Class<?>> loadClassesFromNamePrefix(Map<String, Class<?>> nameToClassMap, String name) {
+		List<Class<?>> classList = new ArrayList<Class<?>>();
+
+		Set<Entry<String, Class<?>>> entries = nameToClassMap.entrySet();
+		Iterator<Entry<String, Class<?>>> it = entries.iterator();
 		while(it.hasNext())
 		{
-			Entry<String, Class> entry = it.next();
+			Entry<String, Class<?>> entry = it.next();
 			if(entry.getKey().startsWith(name)) //TODO: Could get false positives. Use Regex instead?
 			{
-				Class value = entry.getValue();
+				Class<?> value = entry.getValue();
 				classList.add(value);
 			}
 		}

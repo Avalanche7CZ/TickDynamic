@@ -48,6 +48,8 @@ public class CommandHandler implements ICommand {
 		subCommandHandlers.put("world", new CommandWorld(mod));
 		subCommandHandlers.put("enabled", new CommandEnabled(mod));
 		subCommandHandlers.put("identify", new CommandIdentify(mod));
+		subCommandHandlers.put("diagworld", new CommandWorldDiag(mod));
+		subCommandHandlers.put("setslices", new CommandSetSlices(mod));
 
 		StringBuilder builderSubCommands = new StringBuilder();
 		SubCommands[] subs = SubCommands.values();

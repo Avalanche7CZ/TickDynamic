@@ -1,103 +1,11 @@
 package com.wildex999.patcher;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-
-/*
- * Written by: Wildex999 ( wildex999@gmail.com )
- * 
- * Parser for custom patching for Minecraft coremods
- * The goal of this patching is to be able to insert, replace or remove bytecode between two known points.
- * These points are defined as a set of instructions.
- * Points should allow for unknown/dynamic Label and LocalVariable numbers, and even to store and re-use these numbers in the patched code.
- * 
- * Instruction:
- * @ = Command
- * * = Anything. For example: 'LDC 1*2'  can be 'LDC 132', 'LDC 1432', 'LDC 1test2' (Note: Does not match length 0)
- * + = Anything until newline(Newline is not included)
- * <x] = Anything less than 'x' characters in length. Example: 'Test<3]g' can be 'Testing'
- * >x] = Anything more than 'x' characters in length. Example: ''
- * #x] = Anything exactly 'x' characters in length
- * ?varname] = Anything, then stored to varname. For example: 'L?label1]' can be 'L143', which will then put '143' into label1
- * Note: A variable can only be set once during a Start/End!
- * =varname] = Whatever is stored in the varname. For example: 'L=label1]' will become to 'L143', but note that label1 must be set earlier in the patch.
- * {varname]RegEx} = An regular expression, with the result saved to varname. 
- * Note: You have to escape any '}' in the regular expression using '%'.
- * Note2: Each saved variable from @S to @E will be stored in a named group(varname) and can be accessed using the RegEx.
- * Note3: A variable can only be set once during a Start/End!
- * ^varname] = Mark the variable varname as set through RegEx. This will save the variable for later use.
- * Note: A variable is set by using a named group, like: (?<varname>expr)
- * " = Ignore everything until next newline, essentially a comment. Note: Comments inside a command are ignored
- * ! = Ignore everything until next occurrence of !, multi-line comment Note: Comments inside a command are ignored
- * 
- * % = Ignore next instruction/command (%@ = @, %% = % etc.)
- * 
- * varname can only be the characters[a-z][A-z][0-9], and can not begin with a number!
- * 
- * Commands:
- * Note: All commands end once a new one start, for example: '@SThis is @-the@+a@E test.'
- * 
- * @| = End of previous command. Use this when you can't end the command by starting another, for example for formating:
- * '@SThis is @|
- * Note: MUST be used at the end to indicate end of stream, or else the last command is ignored!
- * 
- * @-the@|
- * @+a@|
- * 
- * @E test.'
- * 
- * @O = Origin point, everything after this, will look behind the point defined here.
- * For example, '@Opublic getBiomeGenForCoordsBody(II)Lnet/minecraft/world/biome/BiomeGenBase;@|' will make every subsequent
- * operation start checking after the first occurrence of this origin. This will allow the patching to speed up a lot
- * when the origin point is well chosen.
- * 
- * @L = Limit point, set the point which can not be searched past. Use with @O to set an area for @S and @E to work within.
- * The limit applies to every command after this command. The limit can be overwritten.
- * Example: 
- * '@Opublic getBiomeGenForCoordsBody(II)Lnet/minecraft/world/biome/BiomeGenBase;@|
- * @LLOCALVARIABLE this Lnet/minecraft/world/World; L0 L1 0@|'
- * Will make every subsequent command work within those two known points.
- * Note: will use the first occurrence found after the set origin point!
- * 
- * @R = Reset origin
- * @U = Remove limit
- * Note: These are both empty commands, and doesn't have any data
- * 
- * TODO: @N = Next point, set the origin equal to the end of the previous @E. This allows for a 'walking' patch without having to worry about absolutely unique @S and @E.
- * 
- * @S = Start point, defines the start point of every addition and/or subtraction
- * 
- * @E = End point, defines the end point of every addition and/or subtraction
- * 
- * @- = Subtraction, everything defined here will be removed from between the start point and end point.
- * This must define exactly what is between @S and @E, or else it will not be detected as the correct chunk.
- * For example: 'One Two Three'   '@SOne@- Two @E Three' will become 'One Three'.
- * 
- * @+ = Addition, everything defined here will be added between the start point and end point
- * For example: 'One Three'  '@SOne@+ Two@E Three' will become 'One Two Three'.
- * 
- * Note: You can use @+ or @- alone, however when used together the subtraction will always run first.
- * However, if you have multiple additions of subtractions, they will run in order
- * For Example: 'This is an test for you!'
- * '@Sis an@|
- * @+ examp@|
- * @+le @|
- * @- test @|
- * @Efor you!@|'
- * Will give: 'This is an example for you!'
- * Whereas 'This is an product for you!' would fail, as it can't find the combination to replace.
- */
+import java.util.*;
+import java.util.regex.*;
 
 public class PatchParser {
-	
-	public enum TokenType {
-		Anything,
+    public enum TokenType {
+        Anything,
 		AnythingLine,
 		AnythingLess,
 		AnythingMore,

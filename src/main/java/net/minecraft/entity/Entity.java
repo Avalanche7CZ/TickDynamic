@@ -1146,7 +1146,7 @@ public abstract class Entity extends EntityObject
 
         if (block.getMaterial() == p_70055_1_)
         {
-            double filled = 1.0f; //If it's not a liquid assume it's a solid block
+            double filled = 1.0f;
             if (block instanceof IFluidBlock)
             {
                 filled = ((IFluidBlock)block).getFilledPercentage(worldObj, i, j, k);
@@ -1155,7 +1155,6 @@ public abstract class Entity extends EntityObject
             if (filled < 0)
             {
                 filled *= -1;
-                //filled -= 0.11111111F; //Why this is needed.. not sure...
                 return d0 > (double)(j + (1 - filled));
             }
             else
@@ -1625,7 +1624,6 @@ public abstract class Entity extends EntityObject
                 }
             }
 
-            //Rawr, legacy code, Vanilla added a UUID, keep this so older maps will convert properly
             if (p_70020_1_.hasKey("PersistentIDMSB") && p_70020_1_.hasKey("PersistentIDLSB"))
             {
                 this.entityUniqueID = new UUID(p_70020_1_.getLong("PersistentIDMSB"), p_70020_1_.getLong("PersistentIDLSB"));

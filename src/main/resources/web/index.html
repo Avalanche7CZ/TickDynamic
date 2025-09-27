@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TickDynamic Dashboard</title>
+  <style>
+    :root { --bg:#0f1115; --panel:#161a22; --text:#e6e7ea; --muted:#a9acb3; --accent:#4cc9f0; --ok:#2ecc71; --warn:#f1c40f; --bad:#e74c3c; }
+    html,body { height:100%; background:var(--bg); color:var(--text); font:14px/1.4 system-ui,Segoe UI,Roboto,Ubuntu,Helvetica,Arial,sans-serif; margin:0; }
+    header { padding:16px 20px; background:#0c0f14; border-bottom:1px solid #1f2633; display:flex; align-items:center; gap:16px; }
+    header h1 { margin:0; font-size:18px; letter-spacing:.2px; }
+    header .sub { color:var(--muted); font-size:12px; }
+    main { padding:20px; display:grid; grid-template-columns:repeat(2, 1fr); gap:18px; }
+    /* Responsive fallback for smaller screens */
+    @media (max-width: 760px) { main { grid-template-columns: 1fr; } }
+    .card { background:var(--panel); border:1px solid #232a36; border-radius:10px; overflow:hidden; box-shadow:0 1px 0 rgba(0,0,0,.25); }
+    .card header { background:transparent; border:0; padding:14px 16px; display:flex; align-items:center; justify-content:space-between; }
+    .card header .title { display:flex; flex-direction:column; gap:4px; }
+    .card header .title .small { color:var(--muted); font-size:12px; }
+    .toggle { appearance:none; background:#11151d; color:var(--text); border:1px solid #1d2431; border-radius:8px; padding:6px 10px; cursor:pointer; line-height:1; font-size:12px; }
+    .toggle:hover { border-color:#2a3343; }
+    .card.collapsed .grid-col { display:none; }
+
+    /* KPIs: exactly 3 columns, larger boxes */
+    .kvs { display:grid; gap:18px; padding:0 16px 16px; grid-template-columns:repeat(3, minmax(260px, 1fr)); }
+    .kv { background:#11151d; border:1px solid #1d2431; border-radius:10px; padding:16px 18px; min-width:0; }
+    .kv .label { color:var(--muted); font-size:14px; letter-spacing:.2px; }
+    .kv .value { font-size:22px; margin-top:6px; }
+
+    .pill { padding:2px 8px; border-radius:999px; font-size:12px; border:1px solid transparent; }
+    .pill.ok { background:rgba(46,204,113,.1); color:var(--ok); border-color:rgba(46,204,113,.25); }
+    .pill.warn { background:rgba(241,196,15,.1); color:var(--warn); border-color:rgba(241,196,15,.25); }
+    .pill.bad { background:rgba(231,76,60,.1); color:var(--bad); border-color:rgba(231,76,60,.25); }
+    .pill.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+    table { width:100%; border-collapse:collapse; }
+    th, td { padding:8px 10px; border-top:1px solid #232a36; text-align:left; }
+    th { color:var(--muted); font-weight:600; font-size:12px; background:#121620; position:sticky; top:0; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .table-wrap { overflow:auto; max-width:100%; }
+
+    /* Responsive column hiding for readability */
+    @media (max-width: 1200px) { .col-last, .col-runAvg { display:none; } }
+    @media (max-width: 980px) { .col-slice, .col-min, .col-tdlimit { display:none; } }
+
+    .footer { color:var(--muted); padding:8px 20px 20px; font-size:12px; }
+    .grid-col { display:flex; flex-direction:column; gap:10px; padding:0 16px 16px; }
+    .small { font-size:12px; color:var(--muted); }
+    .row { display:flex; gap:10px; align-items:center; }
+    a { color:var(--accent); text-decoration:none; }
+    a:hover { text-decoration:underline; }
+
+    .hotspots { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; }
+    .hotspot { background:#11151d; border:1px solid #1d2431; border-radius:8px; padding:10px 12px; }
+    .hotspot h4 { margin:0 0 6px; font-size:12px; color:var(--muted); font-weight:600; }
+    .hotspot ul { list-style:none; margin:0; padding:0; }
+    .hotspot li { display:flex; justify-content:space-between; gap:8px; padding:4px 0; border-top:1px dashed #232a36; }
+    .hotspot li:first-child { border-top:0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>TickDynamic Dashboard</h1>
+    <div class="sub" id="version"></div>
+    <div class="sub" id="status"></div>
+    <div class="sub" id="lastUpdate"></div>
+  </header>
+  <main id="content"></main>
+  <div class="footer">Auto-refreshing every <span id="interval">1000</span> ms — <a href="#" id="toggle">Pause</a> · Refresh: <select id="refreshSel"><option value="1000">1s</option><option value="2000">2s</option><option value="5000" selected>5s</option><option value="10000">10s</option><option value="30000">30s</option></select> · <label><input type="checkbox" id="smartUpdate" checked> Smart updates</label></div>
+  <script>
+    const content = document.getElementById('content');
+    const version = document.getElementById('version');
+    const status = document.getElementById('status');
+    const intervalLbl = document.getElementById('interval');
+    const lastUpdate = document.getElementById('lastUpdate');
+    const toggle = document.getElementById('toggle');
+    const refreshSel = document.getElementById('refreshSel');
+    const smartUpdate = document.getElementById('smartUpdate');
+
+    let running = true;
+    let period = 5000; // Default to 5s instead of 1s
+    let lastHtml = '';
+    let lastData = null;
+    let timerId = null;
+
+    function startPolling(){ if(timerId==null){ timerId = setInterval(poll, period); } }
+    function stopPolling(){ if(timerId!=null){ clearInterval(timerId); timerId=null; } }
+
+    // Auto-pause when tab is hidden to save resources
+    document.addEventListener('visibilitychange', () => {
+      if(document.hidden) { stopPolling(); }
+      else { if(running) startPolling(); }
+    });
+
+    toggle.addEventListener('click', (e) => {
+      e.preventDefault();
+      running = !running;
+      toggle.textContent = running ? 'Pause' : 'Resume';
+      if(running) { startPolling(); poll(); }
+      else { stopPolling(); }
+    });
+
+    // Live refresh selector wiring
+    refreshSel.addEventListener('change', () => {
+      const v = parseInt(refreshSel.value, 10);
+      if(!isNaN(v) && v > 0) {
+        period = v;
+        intervalLbl.textContent = v;
+        if(running) { stopPolling(); startPolling(); }
+      }
+    });
+
+    function pill(cls, text){ return `<span class="pill ${cls}">${text}</span>`; }
+    function fmtMs(x){ return (x||0).toFixed(2)+' ms'; }
+    function fmtMs2(x){
+      const v = +x||0;
+      if(v <= 0) return '0.00 ms';
+      if(v < 0.001) return '<0.001 ms'; // Show very small values more clearly
+      if(v < 0.01) return v.toFixed(3)+' ms'; // 3 decimal places for small values
+      if(v < 1.0) return v.toFixed(2)+' ms'; // 2 decimal places for normal values
+      return v.toFixed(1)+' ms'; // 1 decimal place for larger values
+    }
+    function fmtNum(x){ return (x==null?0:x).toLocaleString(); }
+    function fmtPct(x){ return (x==null?0:x).toFixed(0)+'%'; }
+    function nsToMs(x){
+      const ns = +x||0;
+      if(ns <= 0) return 0;
+      return ns / 1000000.0; // Convert nanoseconds to milliseconds
+    }
+
+    function colorForPct(p){ if(p<70) return 'ok'; if(p<90) return 'warn'; return 'bad'; }
+    function colorForSpeed(p){ if(p>=95) return 'ok'; if(p>=70) return 'warn'; return 'bad'; }
+
+    // Fast comparison for data changes
+    function dataChanged(newData, oldData) {
+      if (!oldData) return true;
+
+      // Quick header checks
+      if (newData.averageTPS !== oldData.averageTPS ||
+          newData.lastTickMs !== oldData.lastTickMs ||
+          newData.dynamicActive !== oldData.dynamicActive) return true;
+
+      // Check world count
+      const newWorlds = newData.worlds || [];
+      const oldWorlds = oldData.worlds || [];
+      if (newWorlds.length !== oldWorlds.length) return true;
+
+      // Check world data
+      for (let i = 0; i < newWorlds.length; i++) {
+        const nw = newWorlds[i];
+        const ow = oldWorlds[i];
+        if (!ow || nw.dimId !== ow.dimId) return true;
+
+        // Check key world metrics
+        if (nw.loadedEntities !== ow.loadedEntities ||
+            nw.loadedTileEntities !== ow.loadedTileEntities ||
+            nw.worldSpeedPercent !== ow.worldSpeedPercent) return true;
+
+        // Check groups length
+        const ng = nw.groups || [];
+        const og = ow.groups || [];
+        if (ng.length !== og.length) return true;
+
+        // Quick group check
+        for (let j = 0; j < ng.length; j++) {
+          if (!og[j] || ng[j].count !== og[j].count || ng[j].speedPercent !== og[j].speedPercent) return true;
+        }
+      }
+
+      return false;
+    }
+
+    // Update only header elements that change frequently
+    function updateHeader(data) {
+      version.textContent = 'v'+(data.version||'');
+      const tps = data.averageTPS || 0;
+      const ms = data.lastTickMs || 0;
+      const budget = data.defaultTickMs || 50;
+      const active = !!data.dynamicActive;
+      const pctRaw = (ms/(budget||50))*100;
+      const pctColor = Math.min(100, Math.max(0, pctRaw));
+
+      status.innerHTML = `${pill(colorForPct(pctColor), `${fmtMs(ms)} (${fmtPct(pctRaw)})`)} · TPS ${tps.toFixed(2)} · ${active?pill('ok','TD active'):pill('warn','TD inactive')}`;
+    }
+
+    // Update specific world sections without full rebuild
+    function updateWorldData(worldElement, worldData) {
+      // Update KPIs
+      const kvs = worldElement.querySelectorAll('.kv .value');
+      if (kvs.length >= 3) {
+        const eLoaded = worldData.loadedEntities != null ? worldData.loadedEntities : worldData.totalEntities;
+        const teLoaded = worldData.loadedTileEntities != null ? worldData.loadedTileEntities : worldData.totalTileEntities;
+        const wSpeed = (worldData.worldSpeedPercent != null ? worldData.worldSpeedPercent : (worldData.speedPercent != null ? worldData.speedPercent : 100));
+
+        kvs[0].textContent = fmtNum(eLoaded);
+        kvs[1].textContent = fmtNum(teLoaded);
+        kvs[2].innerHTML = pill(colorForSpeed(wSpeed), fmtPct(wSpeed));
+      }
+
+      // Update group table rows
+      const tbody = worldElement.querySelector('tbody');
+      if (tbody && worldData.groups) {
+        const rows = tbody.querySelectorAll('tr');
+        worldData.groups.forEach((g, i) => {
+          if (rows[i]) {
+            const cells = rows[i].querySelectorAll('td');
+            if (cells.length >= 9) {
+              const t = g.timing || {};
+              const gSpeed = g.speedPercent != null ? g.speedPercent : (t.avgTPS != null ? Math.min(100, Math.max(0, (t.avgTPS/20)*100)) : 100);
+
+              // Update changing cells
+              cells[2].textContent = fmtNum(g.count); // Count
+              cells[5].textContent = fmtMs2(t.avgMs); // Time Avg
+              cells[6].textContent = fmtMs2(t.lastMs); // Time Last
+              cells[7].textContent = fmtNum(t.runAvg); // Run Avg
+              cells[8].innerHTML = pill(colorForSpeed(gSpeed), fmtPct(gSpeed)); // Speed
+              cells[9].innerHTML = pill('mono', (g.tdSlowdown != null ? fmtPct(g.tdSlowdown) : '—')); // TD Slowdown
+            }
+          }
+        });
+      }
+    }
+
+    function render(data){
+      const useSmartUpdate = smartUpdate.checked;
+
+      // Always update header (it's lightweight)
+      updateHeader(data);
+
+      // Check if we need full render or can do smart update
+      if (useSmartUpdate && lastData && !dataChanged(data, lastData)) {
+        // Do smart update - only update changing numbers
+        const worlds = data.worlds || [];
+        worlds.forEach((worldData, index) => {
+          const worldElement = document.querySelector(`[data-dim="${worldData.dimId}"]`);
+          if (worldElement) {
+            updateWorldData(worldElement, worldData);
+          }
+        });
+        return; // Skip full render
+      }
+
+      // Full render only when necessary
+      // ...existing code for generating server hotspots and world HTML...
+      const worlds = data.worlds||[];
+      const allLagTiles = [];
+      const allLagChunks = [];
+      const typeAgg = new Map(); // name -> totalMs
+      const minHs = +data.minHotspotMs || 0; // ms threshold for hotspots
+
+      // Aggregate server-wide hotspots by time (only worlds with players and not special)
+      worlds.forEach(w => {
+        const p = (w.players||0);
+        if(p <= 0) return; if(w.special) return;
+        (w.lagTopTiles||[]).forEach(t => {
+          const tm = +t.totalMs||0; if(tm < minHs) return;
+          allLagTiles.push({ name:t.name, x:t.x, y:t.y, z:t.z, totalMs: tm, dim:w.dimId });
+          const key = t.name||'unknown';
+          typeAgg.set(key, (typeAgg.get(key)||0) + tm);
+        });
+        (w.lagTopChunksTime||[]).forEach(c => {
+          const tm = +c.totalMs||0; if(tm < minHs) return;
+          allLagChunks.push({ cx:c.cx, cz:c.cz, totalMs:tm, dim:w.dimId });
+        });
+      });
+      allLagTiles.sort((a,b)=>b.totalMs-a.totalMs);
+      allLagChunks.sort((a,b)=>b.totalMs-a.totalMs);
+      const topTilesServer = allLagTiles.slice(0,10);
+      const topChunksServer = allLagChunks.slice(0,10);
+      const topTypes = Array.from(typeAgg.entries()).map(([name,totalMs])=>({name,totalMs})).sort((a,b)=>b.totalMs-a.totalMs).slice(0,10);
+
+      let serverHtml = '';
+      if(topTilesServer.length || topChunksServer.length || topTypes.length){
+        serverHtml += `<section class="card"><header><div class="title"><div class="row"><strong>Server Hotspots</strong></div><div class="row small">Worlds with players (non-special). Time entries ≥ ${minHs.toFixed(2)} ms</div></div></header>`;
+        serverHtml += `<div class="grid-col"><div class="hotspots">`;
+        if(topTilesServer.length){
+          serverHtml += `<div class="hotspot"><h4>Top TileEntities (instances by time)</h4><ul>`;
+          topTilesServer.forEach(t=>{ serverHtml += `<li><span>${t.name||''} @ DIM ${t.dim} ${t.x},${t.y},${t.z}</span><span class="mono">${fmtMs2(t.totalMs)}</span></li>`; });
+          serverHtml += `</ul></div>`;
+        }
+        if(topChunksServer.length){
+          serverHtml += `<div class="hotspot"><h4>Top Chunks (by time)</h4><ul>`;
+          topChunksServer.forEach(c=>{ serverHtml += `<li><span>DIM ${c.dim} (${c.cx}, ${c.cz})</span><span class="mono">${fmtMs2(c.totalMs)}</span></li>`; });
+          serverHtml += `</ul></div>`;
+        }
+        if(topTypes.length){
+          serverHtml += `<div class="hotspot"><h4>Intensive Tile types (by time)</h4><ul>`;
+          topTypes.forEach(t=>{ serverHtml += `<li><span>${t.name||''}</span><span class="mono">${fmtMs2(t.totalMs)}</span></li>`; });
+          serverHtml += `</ul></div>`;
+        }
+        serverHtml += `</div></div></section>`;
+      }
+
+      let html = serverHtml;
+      // Show all worlds, even if empty
+      (data.worlds||[]).forEach(w => {
+        const wSpeed = (w.worldSpeedPercent!=null ? w.worldSpeedPercent : (w.speedPercent!=null ? w.speedPercent : 100));
+        const wActive = !!w.tdActive;
+        const eLoaded = w.loadedEntities!=null ? w.loadedEntities : w.totalEntities;
+        const teLoaded = w.loadedTileEntities!=null ? w.loadedTileEntities : w.totalTileEntities;
+        const penNote = (w.penalizedSkipped ? ` · <span class=\"small\" title=\"penalized list skipped: TE ${fmtNum(teLoaded)} > ${fmtNum(w.penalizedScanMax||0)}\">penalized list skipped</span>` : '');
+        html += `<section class=\"card\" data-dim=\"${w.dimId}\">\n<header>\n  <div class=\"title\"><div class=\"row\"><strong>World:</strong>&nbsp;${w.name||''} (DIM ${w.dimId}) ${wActive?pill('ok','TD on'):pill('warn','TD off')}</div>\n  <div class=\"row small\">Entities: ${fmtNum(eLoaded)} · TileEntities: ${fmtNum(teLoaded)}${w.special?` · ${pill('warn','special')}`:''}${penNote}</div></div>\n  <button class=\"toggle\" aria-expanded=\"true\" title=\"Collapse/Expand\">▾</button>\n</header>`;
+        html += `<div class=\"grid-col\">`;
+        html += `<div class=\"kvs\">\n  <div class=\"kv\"><div class=\"label\">Loaded Entities</div><div class=\"value mono\">${fmtNum(eLoaded)}</div></div>\n  <div class=\"kv\"><div class=\"label\">Loaded TileEntities</div><div class=\"value mono\">${fmtNum(teLoaded)}</div></div>\n  <div class=\"kv\"><div class=\"label\">Speed</div><div class=\"value\">${pill(colorForSpeed(wSpeed), fmtPct(wSpeed))}</div></div>\n</div>`;
+
+        // Per-world TileEntity hotspots: by count and by time (intensity)
+        const ts = w.tileSummary||null;
+        // Show intensity list without filtering by minHotspotMs at world level
+        const lt = (w.lagTopTileTypes||[]);
+        const lagTiles = (w.lagTopTiles||[]);
+        const topChunks = (w.topChunks||[]);
+
+        // Always show tile entity section if there are any loaded TEs
+        if(teLoaded > 0) {
+          html += `<div class=\"hotspots\">`;
+
+          // Tile Entities by count - this is the main data you want to see
+          if(ts && ts.length > 0){
+            html += `<div class=\"hotspot\"><h4>Tile Entities (by count)</h4><ul>`;
+            ts.forEach(s=>{
+              const label = (s.display && s.display.trim()) ? s.display : (s.name||'unknown');
+              const mod = s.modName || s.modId || '';
+              const modDisplay = mod ? ` <span class=\"small\">(${mod})</span>` : '';
+              html += `<li><span>${label}${modDisplay}</span><span class=\"mono\">${fmtNum(s.count)}</span></li>`;
+            });
+            html += `</ul></div>`;
+          } else {
+            // Show debug info when tile summary is missing
+            html += `<div class=\"hotspot\"><h4>Tile Entities (by count)</h4>`;
+            html += `<div class=\"small\" style=\"opacity:0.7; padding:8px 0;\">`;
+            html += `Tile summary not available (${fmtNum(teLoaded)} TEs loaded).<br>`;
+            html += `This may indicate TickDynamic tile management is disabled or no tile groups are active.`;
+            html += `</div></div>`;
+          }
+
+          // Tile Entities by intensity (time-based lag)
+          if(lt && lt.length > 0){
+            html += `<div class=\"hotspot\"><h4>Tile Entities (by intensity)</h4><ul>`;
+            lt.forEach(t=>{
+              const hits = +t.hits||0;
+              const total = +t.totalMs||0;
+              const avg = hits > 0 ? (total/hits) : 0;
+              const hitsInfo = hits > 0 ? ` <span class=\"small\">(${hits} hits)</span>` : '';
+              const avgInfo = hits > 0 ? ` · ${fmtMs2(avg)}/hit` : '';
+              html += `<li><span>${t.name||'unknown'}${hitsInfo}</span><span class=\"mono\">${fmtMs2(total)}${avgInfo}</span></li>`;
+            });
+            html += `</ul></div>`;
+          }
+
+          // Individual lagging tile entities with coordinates
+          if(lagTiles && lagTiles.length > 0){
+            html += `<div class=\"hotspot\"><h4>Lagging Tile Entities (instances)</h4><ul>`;
+            lagTiles.forEach(t=>{
+              const name = t.name || 'unknown';
+              const coords = `${t.x},${t.y},${t.z}`;
+              html += `<li><span>${name} @ ${coords}</span><span class=\"mono\">${fmtMs2(t.totalMs)}</span></li>`;
+            });
+            html += `</ul></div>`;
+          }
+
+          // Top chunks by tile entity count (inspired by OPIS approach)
+          if(topChunks && topChunks.length > 0){
+            html += `<div class=\"hotspot\"><h4>Top Chunks (by TE count)</h4><ul>`;
+            topChunks.forEach(c=>{
+              const chunkName = `Chunk (${c.cx}, ${c.cz})`;
+              html += `<li><span>${chunkName}</span><span class=\"mono\">${fmtNum(c.count)} TEs</span></li>`;
+            });
+            html += `</ul></div>`;
+          }
+
+          html += `</div>`;
+        } else {
+          // Only show this message when there are truly no tile entities
+          html += `<div class=\"small\" style=\"opacity:0.7; padding:0 16px;\">No tile entities loaded in this world.</div>`;
+        }
+
+        html += `<div class=\"table-wrap\"><table>\n<thead><tr>\n  <th>Name</th><th>Type</th><th>Count</th><th class=\"col-slice\">Slices</th><th title=\"Budget cap for this group; ∞ means unlimited (>= 2× tick budget).\">Time Max (ms)</th><th>Time Avg (ms)</th><th class=\"col-last\">Time Last (ms)</th><th class=\"col-runAvg\">Run Avg</th><th>Speed</th><th class=\"col-tdlimit\">TD Slowdown</th><th class=\"col-min\">Min</th>\n</tr></thead><tbody>`;
+        let hasTileEntityGroup = false;
+        (w.groups||[]).forEach(g => {
+          const t = g.timing||{};
+          let mins = '';
+          if(g.type==='entity') { mins = `obj ${fmtNum(t.minObjects||0)} · tps ${(t.minTPS||0).toFixed(1)} · time ${(t.minTime||0).toFixed(1)}ms`; }
+          const hasObjects = (g.count||0) > 0;
+          const gSpeed = g.speedPercent!=null ? g.speedPercent : (t.avgTPS!=null? Math.min(100, Math.max(0, (t.avgTPS/20)*100)) : 100);
+          if(g.type==='tileentity') hasTileEntityGroup = true;
+          html += `<tr><td>${g.name||''}</td><td>${g.type||''}</td><td>${fmtNum(g.count)}</td><td class=\"col-slice\">${fmtNum(g.slicesMax)}</td><td>${fmtMs2(t.maxMs)}</td><td>${fmtMs2(t.avgMs)}</td><td class=\"col-last\">${fmtMs2(t.lastMs)}</td><td class=\"col-runAvg\">${fmtNum(t.runAvg)}</td><td>${pill(colorForSpeed(gSpeed), fmtPct(gSpeed))}</td><td class=\"col-tdlimit\">${pill('mono', (g.tdSlowdown!=null?fmtPct(g.tdSlowdown):'—'))}</td><td class=\"col-min\">${mins}</td></tr>`;
+        });
+        if(!hasTileEntityGroup) {
+          html += `<tr><td colspan=\"11\"><em>No tile entities</em></td></tr>`;
+        }
+        html += `</tbody></table></div>`;
+        html += `</div></section>`;
+      });
+
+      if(html !== lastHtml) {
+        content.innerHTML = html || '<div class="small" style="opacity:.7">No worlds loaded.</div>';
+        lastHtml = html;
+        // Re-attach event listeners for collapse/expand
+        document.querySelectorAll('.card .toggle').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const card = btn.closest('.card');
+            const nowOpen = card.classList.toggle('collapsed') ? false : true;
+            btn.setAttribute('aria-expanded', nowOpen);
+            btn.textContent = nowOpen ? '▾' : '▸';
+          });
+        });
+      }
+
+      // Store last data for comparison
+      lastData = JSON.parse(JSON.stringify(data));
+    }
+
+    async function poll(){
+      if(!running) return;
+      try{
+        const r = await fetch('api/metrics', { cache:'no-store' });
+        if(!r.ok) throw new Error('HTTP '+r.status);
+        const data = await r.json();
+        render(data);
+        lastUpdate.textContent = 'Last update: '+new Date().toLocaleTimeString();
+      }catch(e){
+        lastUpdate.textContent = 'Error: '+e.message;
+      }
+    }
+
+    // Initialize footer values
+    intervalLbl.textContent = period;
+    refreshSel.value = String(period);
+    startPolling();
+    poll();
+  </script>
+</body>
+</html>
