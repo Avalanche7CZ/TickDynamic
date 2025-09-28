@@ -15,7 +15,30 @@ import net.minecraft.tileentity.TileEntity;
 public final class SnapshotProvider {
     private SnapshotProvider() {}
 
+    // Caches to reduce multiblock scan overhead
+    private static final java.util.concurrent.ConcurrentHashMap<Integer, String> CACHE_MULTIBLOCKS = new java.util.concurrent.ConcurrentHashMap<Integer, String>();
+    private static final java.util.concurrent.ConcurrentHashMap<Integer, String> CACHE_MULTIBLOCK_GROUPS = new java.util.concurrent.ConcurrentHashMap<Integer, String>();
+    private static final java.util.concurrent.ConcurrentHashMap<Integer, Integer> CACHE_LAST_TICK = new java.util.concurrent.ConcurrentHashMap<Integer, Integer>();
+    private static final int MULTIBLOCK_SCAN_EVERY_TICKS = Integer.getInteger("tickdynamic.web.multiblock.scanEveryTicks", 40);
+
+    // Per-snapshot error collection for better diagnostics
+    private static final ThreadLocal<java.util.List<String>> SNAP_ERRORS = new ThreadLocal<java.util.List<String>>();
+    private static void logError(int dim, String section, Throwable t) {
+        try {
+            java.util.List<String> list = SNAP_ERRORS.get();
+            if(list == null) return;
+            String msg = "dim=" + dim + " section=" + section + " error=" + (t!=null?t.getClass().getSimpleName()+": "+String.valueOf(t.getMessage()):"unknown");
+            list.add(msg);
+        } catch (Throwable ignore) {}
+    }
+
+    private static StringBuilder str(StringBuilder sb, String val) {
+        sb.append('"').append(escape(val==null?"":val)).append('"');
+        return sb;
+    }
+
     public static String buildJson(TickDynamicMod mod) {
+        SNAP_ERRORS.set(new java.util.ArrayList<String>());
         StringBuilder sb = new StringBuilder(16_384);
         sb.append('{');
         // header
@@ -42,6 +65,10 @@ public final class SnapshotProvider {
         sb.append("},");
 
         // worlds
+        int totalLoadedEntities = 0;
+        int totalLoadedTileEntities = 0;
+        int worldCount = 0;
+        int totalPlayers = 0;
         sb.append("\"worlds\":[");
         MinecraftServer server = mod != null ? mod.server : null;
         WorldServer[] arr = server != null ? server.worldServers : null;
@@ -51,11 +78,83 @@ public final class SnapshotProvider {
                 if(ws == null) continue;
                 if(!firstWorld) sb.append(','); firstWorld = false;
                 worldJson(sb, mod, ws);
+                worldCount++;
+                // Sum loadedEntities and loadedTileEntities for server-wide totals
+                try {
+                    Object le = ws.loadedEntityList;
+                    if(le instanceof java.util.List) totalLoadedEntities += ((java.util.List<?>)le).size();
+                } catch(Throwable ignore) {}
+                try {
+                    Object lt = ws.loadedTileEntityList;
+                    if(lt instanceof java.util.List) totalLoadedTileEntities += ((java.util.List<?>)lt).size();
+                } catch(Throwable ignore) {}
+                try {
+                    java.util.List<?> pe = ws.playerEntities;
+                    if(pe != null) totalPlayers += pe.size();
+                } catch(Throwable ignore) {}
             }
         }
         sb.append("]");
+        sb.append(',');
+        num(sb, "worldCount", worldCount).append(',');
+        num(sb, "totalPlayers", totalPlayers).append(',');
+        num(sb, "totalLoadedEntities", totalLoadedEntities).append(',');
+        num(sb, "totalLoadedTileEntities", totalLoadedTileEntities);
+        // Append errors if any
+        try {
+            java.util.List<String> errs = SNAP_ERRORS.get();
+            if(errs != null && !errs.isEmpty()) {
+                sb.append(',');
+                sb.append("\"errors\":");
+                sb.append('[');
+                boolean first = true;
+                for(String s : errs) { if(!first) sb.append(','); first=false; str(sb, s); }
+                sb.append(']');
+            }
+        } catch(Throwable ignore) {}
         sb.append('}');
         return sb.toString();
+    }
+
+    private static boolean plausibleGtOrController(TileEntity te) {
+        if(te == null) return false;
+        try {
+            String n = te.getClass().getName();
+            if(n != null && n.contains("gregtech")) return true;
+            String sn = te.getClass().getSimpleName();
+            if(sn != null) {
+                String l = sn.toLowerCase(java.util.Locale.ROOT);
+                if(l.contains("controller") || l.contains("multiblock") || l.contains("multi_block")) return true;
+            }
+            try { te.getClass().getMethod("getMetaTileEntity"); return true; } catch(Throwable ignore) {}
+        } catch(Throwable ignore) {}
+        return false;
+    }
+
+    private static double sumMsForTileType(World w, java.util.List<TileEntity> rawTiles, String reg, int meta) {
+        if(rawTiles == null || rawTiles.isEmpty()) return 0.0;
+        int dim = w.provider.dimensionId;
+        long sumNs = 0L;
+        for(Object o : rawTiles) {
+            if(!(o instanceof TileEntity)) continue;
+            TileEntity te = (TileEntity)o;
+            try {
+                net.minecraft.block.Block b = w.getBlock(te.xCoord, te.yCoord, te.zCoord);
+                int m = w.getBlockMetadata(te.xCoord, te.yCoord, te.zCoord);
+                String r; try { r = cpw.mods.fml.common.registry.GameData.getBlockRegistry().getNameForObject(b); } catch(Throwable t) { r = String.valueOf(b); }
+                if(reg.equals(r) && meta == m) {
+                    sumNs += com.wildex999.tickdynamic.listinject.CustomProfiler.lagIndex.getNsAt(dim, te.xCoord, te.yCoord, te.zCoord);
+                }
+            } catch(Throwable ignore) {}
+        }
+        return sumNs / 1_000_000.0;
+    }
+
+    private static String[] splitNullKey(String key) {
+        if(key == null) return new String[]{"",""};
+        int i = key.indexOf('\0');
+        if(i < 0) return new String[]{key, ""};
+        return new String[]{ key.substring(0, i), (i+1 < key.length()) ? key.substring(i+1) : "" };
     }
 
     private static void worldJson(StringBuilder sb, TickDynamicMod mod, World w) {
@@ -65,6 +164,7 @@ public final class SnapshotProvider {
         // operational flags
         field(sb, "tdActive", mod.dynamicActive).append(',');
         num(sb, "tickBudgetMs", mod.defaultTickTime).append(',');
+        int dimForErr = 0; try { dimForErr = w.provider.dimensionId; } catch(Throwable ignore) {}
         // expose current player count in world (for UI filtering)
         int players = 0; try { java.util.List<?> pe = (w instanceof net.minecraft.world.WorldServer) ? ((net.minecraft.world.WorldServer)w).playerEntities : null; players = (pe!=null)?pe.size():0; } catch(Throwable ignore) {}
         num(sb, "players", players).append(',');
@@ -511,12 +611,11 @@ public final class SnapshotProvider {
                             try { display = st.getDisplayName(); } catch(Throwable ignore) {}
                         }
                     }
-                    try {
-                        cpw.mods.fml.common.ModContainer mc = cpw.mods.fml.common.Loader.isModLoaded(modId) ? cpw.mods.fml.common.Loader.instance().getIndexedModList().get(modId) : null;
-                        if(mc != null) modName = mc.getName();
-                    } catch(Throwable ignore) {}
+                    try { cpw.mods.fml.common.ModContainer mc = cpw.mods.fml.common.Loader.isModLoaded(modId) ? cpw.mods.fml.common.Loader.instance().getIndexedModList().get(modId) : null; if(mc != null) modName = mc.getName(); } catch(Throwable ignore) {}
                 } catch(Throwable ignore) {}
                 if(display == null || display.isEmpty()) display = reg + ":" + meta;
+                double totalMs = 0.0;
+                try { totalMs = sumMsForTileType(w, (java.util.List<TileEntity>)rawTiles, reg, meta); } catch(Throwable ignore) {}
                 sb.append('{');
                 field(sb, "name", safe(reg)).append(',');
                 field(sb, "display", safe(display)).append(',');
@@ -524,47 +623,26 @@ public final class SnapshotProvider {
                 field(sb, "modName", safe(modName)).append(',');
                 num(sb, "meta", meta).append(',');
                 num(sb, "count", count).append(',');
-                // Multiblock detection (GregTech/MetaTileEntity, robust for GTNH)
-                boolean isMultiblock = false;
-                String multiblockType = "";
+                num(sb, "ms", totalMs).append(',');
+                // Multiblock hint: only mark true controllers, not parts (use detector)
+                boolean isMultiblock = false; String multiblockType = "";
                 try {
-                    TileEntity te = null;
-                    if (raw != null && !raw.isEmpty()) {
-                        for (Object o : raw) {
+                    TileEntity te = null; java.util.List<?> baseList = (rawTiles != null && !rawTiles.isEmpty()) ? rawTiles : (w.loadedTileEntityList instanceof java.util.List ? (java.util.List<?>)w.loadedTileEntityList : null);
+                    if (baseList != null) {
+                        for (Object o : baseList) {
                             if (!(o instanceof TileEntity)) continue;
                             TileEntity candidate = (TileEntity)o;
-                            net.minecraft.block.Block b = w.getBlock(candidate.xCoord, candidate.yCoord, candidate.zCoord);
+                            net.minecraft.block.Block bb = w.getBlock(candidate.xCoord, candidate.yCoord, candidate.zCoord);
                             int m = w.getBlockMetadata(candidate.xCoord, candidate.yCoord, candidate.zCoord);
-                            String r;
-                            try { r = cpw.mods.fml.common.registry.GameData.getBlockRegistry().getNameForObject(b); } catch(Throwable t) { r = String.valueOf(b); }
+                            String r; try { r = cpw.mods.fml.common.registry.GameData.getBlockRegistry().getNameForObject(bb); } catch(Throwable t) { r = String.valueOf(bb); }
                             if (reg.equals(r) && meta == m) { te = candidate; break; }
                         }
                     }
                     if (te != null) {
-                        // Prefer using the same logic as runtime detection
-                        if (com.wildex999.tickdynamic.util.ModTileEntityUtils.isGregTechMultiblockController(te)) {
+                        com.wildex999.tickdynamic.util.MultiblockDetector.MultiblockInfo info = com.wildex999.tickdynamic.util.MultiblockDetector.analyzeMultiblock(te);
+                        if(info != null && info.controller != null && info.controller == te) {
                             isMultiblock = true;
-                            try {
-                                java.lang.reflect.Method getMTE = te.getClass().getMethod("getMetaTileEntity");
-                                Object mte = getMTE.invoke(te);
-                                if(mte != null) multiblockType = mte.getClass().getSimpleName();
-                            } catch (Throwable ignore) {}
-                        } else {
-                            // Heuristic fallback for other mods
-                            Class<?> teClass = te.getClass();
-                            String teName = teClass.getSimpleName().toLowerCase();
-                            if (teName.contains("multiblock") || teName.contains("multi")) {
-                                isMultiblock = true; multiblockType = teClass.getSimpleName();
-                            } else {
-                                try {
-                                    java.lang.reflect.Method getMTE = teClass.getMethod("getMetaTileEntity");
-                                    Object mte = getMTE.invoke(te);
-                                    if(mte != null) {
-                                        String mteName = mte.getClass().getSimpleName().toLowerCase();
-                                        if(mteName.contains("multiblock") || mteName.contains("multi")) { isMultiblock = true; multiblockType = mte.getClass().getSimpleName(); }
-                                    }
-                                } catch (Throwable ignore) {}
-                            }
+                            multiblockType = (info.type != null && !info.type.isEmpty()) ? info.type : te.getClass().getSimpleName();
                         }
                     }
                 } catch(Throwable ignore) {}
@@ -577,86 +655,203 @@ public final class SnapshotProvider {
             sb.append("null");
         }
         sb.append(',');
-        // Detected multiblocks (controllers aggregated)
+        // Detected multiblocks with timing and TD penalty info
         sb.append("\"multiblocks\":");
         try {
-            java.util.List<TileEntity> tilesBase = rawTiles;
-            if(tilesBase != null && !tilesBase.isEmpty()) {
-                int n = tilesBase.size();
-                int maxScan = Integer.getInteger("tickdynamic.web.multiblockScanMax", 20000);
-                int step = (n > maxScan) ? Math.max(2, n / maxScan) : 1;
-                java.util.LinkedHashMap<String, com.wildex999.tickdynamic.util.MultiblockDetector.MultiblockInfo> map = new java.util.LinkedHashMap<String, com.wildex999.tickdynamic.util.MultiblockDetector.MultiblockInfo>();
-                int scanned = 0;
-                for(int i=0;i<n;i+=step) {
-                    TileEntity te = tilesBase.get(i);
-                    if(te == null || te.isInvalid()) continue;
-                    com.wildex999.tickdynamic.util.MultiblockDetector.MultiblockInfo info = com.wildex999.tickdynamic.util.MultiblockDetector.analyzeMultiblock(te);
-                    if(info != null && info.controller != null) {
-                        String key = info.controller.getClass().getName()+":"+info.dimId+":"+info.controller.xCoord+":"+info.controller.yCoord+":"+info.controller.zCoord;
-                        map.put(key, info);
+            int dimId = w.provider.dimensionId;
+            boolean needScan = true;
+            try { Integer last = CACHE_LAST_TICK.get(dimId); if(last != null) needScan = ((mod.tickCounter - last.intValue()) >= MULTIBLOCK_SCAN_EVERY_TICKS); } catch(Throwable ignore) {}
+            if(!needScan) {
+                String cached = CACHE_MULTIBLOCKS.get(dimId);
+                if(cached != null) { sb.append(cached); } else needScan = true;
+            }
+            if(needScan) {
+                java.util.List<TileEntity> tilesBase = rawTiles != null ? rawTiles : new java.util.ArrayList<TileEntity>();
+                int gtMax = Integer.getInteger("tickdynamic.web.multiblock.gtScanMax", 100000);
+                java.util.IdentityHashMap<TileEntity, Boolean> seen = new java.util.IdentityHashMap<TileEntity, Boolean>();
+                for(TileEntity t : tilesBase) seen.put(t, Boolean.TRUE);
+                try {
+                    Object cps = null;
+                    if(w instanceof WorldServer) {
+                        try { java.lang.reflect.Field f = WorldServer.class.getDeclaredField("theChunkProviderServer"); f.setAccessible(true); cps = f.get(w); }
+                        catch(Throwable e1) { try { java.lang.reflect.Field f2 = WorldServer.class.getDeclaredField("chunkProviderServer"); f2.setAccessible(true); cps = f2.get(w); } catch(Throwable e2) { cps = null; } }
                     }
-                    if(++scanned >= maxScan) break;
-                }
-                // Cleanup cache periodically
-                try { com.wildex999.tickdynamic.util.MultiblockDetector.cleanup(); } catch(Throwable ignore) {}
-                sb.append('[');
-                boolean firstMb = true;
-                for(java.util.Map.Entry<String, com.wildex999.tickdynamic.util.MultiblockDetector.MultiblockInfo> e : map.entrySet()) {
-                    com.wildex999.tickdynamic.util.MultiblockDetector.MultiblockInfo mb = e.getValue();
-                    if(!firstMb) sb.append(','); firstMb = false;
-                    sb.append('{');
-                    field(sb, "type", safe(mb.type)).append(',');
-                    field(sb, "displayName", safe(mb.displayName)).append(',');
-                    sb.append("\"controller\":{");
-                    num(sb, "x", mb.controller!=null?mb.controller.xCoord:0).append(',');
-                    num(sb, "y", mb.controller!=null?mb.controller.yCoord:0).append(',');
-                    num(sb, "z", mb.controller!=null?mb.controller.zCoord:0).append(',');
-                    num(sb, "dim", mb.dimId);
-                    sb.append('}').append(',');
-                    int mbSize = 0; try { mbSize = mb.getSize(); } catch(Throwable ignore) {}
-                    num(sb, "size", (mbSize <= 0 ? 1 : mbSize)).append(',');
-                    field(sb, "active", mb.isActive);
-                    sb.append('}');
-                }
-                sb.append(']');
-            } else {
-                sb.append("[]");
+                    java.util.List<?> loadedChunks = null;
+                    if(cps != null) {
+                        try { java.lang.reflect.Field fCh = cps.getClass().getDeclaredField("loadedChunks"); fCh.setAccessible(true); Object lc = fCh.get(cps); if(lc instanceof java.util.List) loadedChunks = (java.util.List<?>) lc; } catch(Throwable ignore) {}
+                        if(loadedChunks == null || loadedChunks.isEmpty()) {
+                            try { java.lang.reflect.Field fMap = cps.getClass().getDeclaredField("id2ChunkMap"); fMap.setAccessible(true); Object map = fMap.get(cps); if(map != null) { try { java.lang.reflect.Method mv = map.getClass().getMethod("values"); Object v = mv.invoke(map); if(v instanceof java.util.Collection) loadedChunks = new java.util.ArrayList<Object>((java.util.Collection<?>)v); } catch(Throwable ignore) {} } } catch(Throwable ignore) {}
+                        }
+                    }
+                    int added = 0;
+                    if(loadedChunks != null) {
+                        for(Object ch : loadedChunks) {
+                            if(ch == null) continue;
+                            java.util.Map<?,?> teMap = null;
+                            try { java.lang.reflect.Field fM = ch.getClass().getDeclaredField("chunkTileEntityMap"); fM.setAccessible(true); Object m = fM.get(ch); if(m instanceof java.util.Map) teMap = (java.util.Map<?,?>) m; } catch (Throwable ignore) {}
+                            if(teMap == null) { try { java.lang.reflect.Field fM2 = ch.getClass().getDeclaredField("tileEntityMap"); fM2.setAccessible(true); Object m2 = fM2.get(ch); if(m2 instanceof java.util.Map) teMap = (java.util.Map<?,?>) m2; } catch (Throwable ignore) {} }
+                            if(teMap == null || teMap.isEmpty()) continue;
+                            for(Object o : teMap.values()) {
+                                if(!(o instanceof TileEntity)) continue; TileEntity te = (TileEntity)o;
+                                if(seen.containsKey(te)) continue;
+                                boolean isGt = plausibleGtOrController(te);
+                                if(!isGt) continue;
+                                tilesBase.add(te); seen.put(te, Boolean.TRUE);
+                                if(++added >= gtMax) break;
+                            }
+                            if(added >= gtMax) break;
+                        }
+                    }
+                } catch(Throwable ignore) {}
+
+                StringBuilder tmp = new StringBuilder(4096);
+                if(tilesBase != null && !tilesBase.isEmpty()) {
+                    int n = tilesBase.size();
+                    int maxScan = Integer.getInteger("tickdynamic.web.multiblockScanMax", 20000);
+                    int step = (n > maxScan) ? Math.max(2, n / maxScan) : 1;
+                    java.util.LinkedHashMap<String, com.wildex999.tickdynamic.util.MultiblockDetector.MultiblockInfo> map = new java.util.LinkedHashMap<String, com.wildex999.tickdynamic.util.MultiblockDetector.MultiblockInfo>();
+                    int scanned = 0;
+                    for(int i=0;i<n;i+=step) {
+                        TileEntity te = tilesBase.get(i);
+                        if(te == null || te.isInvalid()) continue;
+                        if(!plausibleGtOrController(te)) continue;
+                        com.wildex999.tickdynamic.util.MultiblockDetector.MultiblockInfo info = com.wildex999.tickdynamic.util.MultiblockDetector.analyzeMultiblock(te);
+                        if(info != null && info.controller != null) {
+                            String key = info.controller.getClass().getName()+":"+info.dimId+":"+info.controller.xCoord+":"+info.controller.yCoord+":"+info.controller.zCoord;
+                            map.put(key, info);
+                        }
+                        if(++scanned >= maxScan) break;
+                    }
+                    try { com.wildex999.tickdynamic.util.MultiblockDetector.cleanup(); } catch(Throwable ignore) {}
+                    tmp.append('[');
+                    boolean firstMb = true;
+                    for(java.util.Map.Entry<String, com.wildex999.tickdynamic.util.MultiblockDetector.MultiblockInfo> e : map.entrySet()) {
+                        com.wildex999.tickdynamic.util.MultiblockDetector.MultiblockInfo mb = e.getValue();
+                        if(!firstMb) tmp.append(','); firstMb = false;
+                        int dim = mb.dimId;
+                        int cx = mb.controller!=null?mb.controller.xCoord:0;
+                        int cy = mb.controller!=null?mb.controller.yCoord:0;
+                        int cz = mb.controller!=null?mb.controller.zCoord:0;
+                        long nsSum = 0L; int hitsSum = 0;
+                        try {
+                            java.util.List<com.wildex999.tickdynamic.util.MultiblockDetector.Pos> parts = mb.getPositionsSnapshot();
+                            if(parts != null) {
+                                for(com.wildex999.tickdynamic.util.MultiblockDetector.Pos p : parts) {
+                                    nsSum += com.wildex999.tickdynamic.listinject.CustomProfiler.lagIndex.getNsAt(p.dim, p.x, p.y, p.z);
+                                    hitsSum += com.wildex999.tickdynamic.listinject.CustomProfiler.lagIndex.getHitsAt(p.dim, p.x, p.y, p.z);
+                                }
+                            }
+                            if(mb.controller != null) {
+                                nsSum += com.wildex999.tickdynamic.listinject.CustomProfiler.lagIndex.getNsAt(dim, cx, cy, cz);
+                                hitsSum += com.wildex999.tickdynamic.listinject.CustomProfiler.lagIndex.getHitsAt(dim, cx, cy, cz);
+                            }
+                        } catch(Throwable ignoreAgg) {}
+                        double totalMs = nsSum / 1_000_000.0;
+                        double avgMs = hitsSum > 0 ? (nsSum / 1_000_000.0) / hitsSum : 0.0;
+                        boolean penalized = false; double prob = 0.0;
+                        try { java.util.concurrent.ConcurrentHashMap<Long, Double> pm = mod.tileOffenderPenalty.get(Integer.valueOf(dim)); if(pm != null) { long key = com.wildex999.tickdynamic.TickDynamicMod.packTileKey(cx, cy, cz); Double p = pm.get(key); penalized = (p != null && p.doubleValue() > 0); prob = penalized ? Math.min(0.95, Math.max(0.0, p.doubleValue())) : 0.0; } } catch(Throwable ignore) {}
+                        tmp.append('{');
+                        field(tmp, "type", safe(mb.type)).append(',');
+                        field(tmp, "displayName", safe(mb.displayName)).append(',');
+                        tmp.append("\"controller\":{"); num(tmp, "x", cx).append(','); num(tmp, "y", cy).append(','); num(tmp, "z", cz).append(','); num(tmp, "dim", dim); tmp.append('}').append(',');
+                        int mbSize = 0; try { mbSize = mb.getSize(); } catch(Throwable ignore) {}
+                        num(tmp, "size", (mbSize <= 0 ? 1 : mbSize)).append(',');
+                        field(tmp, "active", mb.isActive).append(',');
+                        num(tmp, "totalMs", totalMs).append(',');
+                        num(tmp, "avgMs", avgMs).append(',');
+                        num(tmp, "hits", hitsSum).append(',');
+                        field(tmp, "penalized", penalized).append(',');
+                        num(tmp, "prob", prob);
+                        tmp.append('}');
+                    }
+                    tmp.append(']');
+                } else { tmp.append("[]"); }
+                String built = tmp.toString(); sb.append(built); CACHE_MULTIBLOCKS.put(dimId, built); CACHE_LAST_TICK.put(dimId, Integer.valueOf(mod.tickCounter));
             }
         } catch(Throwable t) { sb.append("null"); }
         sb.append(',');
-        sb.append("\"topChunks\":");
+        // --- Grouped multiblocks for UI dropdown ---
         try {
-            java.util.HashMap<Long, Integer> chunks = new java.util.HashMap<Long, Integer>();
-            for(EntityGroup g : groups) {
-                if(g == null || g.getGroupType() != EntityType.TileEntity) continue;
-                java.util.ArrayList<com.wildex999.tickdynamic.listinject.EntityObject> entitiesList = g.entities;
-                for(com.wildex999.tickdynamic.listinject.EntityObject eo : entitiesList) {
-                    TileEntity te = eo.TD_selfTileEntity;
-                    if(te == null) continue;
-                    int cx = te.xCoord >> 4; int cz = te.zCoord >> 4;
-                    long key = (((long)cx) << 32) ^ (cz & 0xffffffffL);
-                    Integer prev = chunks.get(key);
-                    chunks.put(key, prev==null?1:prev+1);
-                }
+            int dimId = w.provider.dimensionId;
+            boolean needScan = true;
+            try { Integer last = CACHE_LAST_TICK.get(dimId); if(last != null) needScan = ((mod.tickCounter - last.intValue()) >= MULTIBLOCK_SCAN_EVERY_TICKS); } catch(Throwable ignore) {}
+            if(!needScan) {
+                String cached = CACHE_MULTIBLOCK_GROUPS.get(dimId);
+                if(cached != null) { sb.append(cached); }
+                else needScan = true;
             }
-            // Raw fallback if no groups
-            if(chunks.isEmpty() && loadedTe > 0) {
-                if(raw != null) {
-                    for(Object o : raw) {
-                        if(!(o instanceof TileEntity)) continue;
-                        TileEntity te = (TileEntity)o;
-                        int cx = te.xCoord >> 4; int cz = te.zCoord >> 4;
-                        long key = (((long)cx) << 32) ^ (cz & 0xffffffffL);
-                        Integer prev = chunks.get(key); chunks.put(key, prev==null?1:prev+1);
+            if(needScan) {
+                java.util.List<TileEntity> tilesBase2;
+                try { java.util.List<?> rawList = (w.loadedTileEntityList instanceof java.util.List) ? (java.util.List<?>)w.loadedTileEntityList : null; tilesBase2 = new java.util.ArrayList<TileEntity>(); if(rawList != null) { for(Object o : rawList) if(o instanceof TileEntity) tilesBase2.add((TileEntity)o); } }
+                catch(Throwable ignore) { tilesBase2 = new java.util.ArrayList<TileEntity>(); }
+                StringBuilder tmp = new StringBuilder(4096);
+                tmp.append("\"multiblockGroups\":");
+                if(tilesBase2 != null && !tilesBase2.isEmpty()) {
+                    int n = tilesBase2.size();
+                    int maxScan = Integer.getInteger("tickdynamic.web.multiblockScanMax", 20000);
+                    int step = (n > maxScan) ? Math.max(2, n / maxScan) : 1;
+                    java.util.LinkedHashMap<String, java.util.List<com.wildex999.tickdynamic.util.MultiblockDetector.MultiblockInfo>> groupMap = new java.util.LinkedHashMap<>();
+                    for(int i=0;i<n;i+=step) {
+                        TileEntity te = tilesBase2.get(i);
+                        if(te == null || te.isInvalid()) continue;
+                        if(!plausibleGtOrController(te)) continue;
+                        com.wildex999.tickdynamic.util.MultiblockDetector.MultiblockInfo info = com.wildex999.tickdynamic.util.MultiblockDetector.analyzeMultiblock(te);
+                        if(info != null && info.controller != null) {
+                            String key = (info.type != null ? info.type : "") + "\0" + (info.displayName != null ? info.displayName : "");
+                            java.util.List<com.wildex999.tickdynamic.util.MultiblockDetector.MultiblockInfo> groupList = groupMap.get(key);
+                            if(groupList == null) { groupList = new java.util.ArrayList<>(); groupMap.put(key, groupList); }
+                            groupList.add(info);
+                        }
                     }
+                    tmp.append('[');
+                    boolean firstGrp = true;
+                    for(java.util.Map.Entry<String, java.util.List<com.wildex999.tickdynamic.util.MultiblockDetector.MultiblockInfo>> e : groupMap.entrySet()) {
+                        if(!firstGrp) tmp.append(','); firstGrp = false;
+                        String[] partsKey = splitNullKey(e.getKey());
+                        String type = partsKey.length>0?partsKey[0]:"";
+                        String displayName = partsKey.length>1?partsKey[1]:"";
+                        java.util.List<com.wildex999.tickdynamic.util.MultiblockDetector.MultiblockInfo> group = e.getValue();
+                        tmp.append('{');
+                        field(tmp, "type", safe(type)).append(',');
+                        field(tmp, "displayName", safe(displayName)).append(',');
+                        num(tmp, "count", group.size()).append(',');
+                        tmp.append("\"instances\":");
+                        tmp.append('[');
+                        boolean firstMb2 = true;
+                        for(com.wildex999.tickdynamic.util.MultiblockDetector.MultiblockInfo mb : group) {
+                            if(!firstMb2) tmp.append(','); firstMb2 = false;
+                            int dimI = mb.dimId; int cxI = mb.controller!=null?mb.controller.xCoord:0; int cyI = mb.controller!=null?mb.controller.yCoord:0; int czI = mb.controller!=null?mb.controller.zCoord:0;
+                            long nsSumI = 0L; int hitsSumI = 0;
+                            try {
+                                java.util.List<com.wildex999.tickdynamic.util.MultiblockDetector.Pos> partsI = mb.getPositionsSnapshot();
+                                if(partsI != null) {
+                                    for(com.wildex999.tickdynamic.util.MultiblockDetector.Pos p : partsI) {
+                                        nsSumI += com.wildex999.tickdynamic.listinject.CustomProfiler.lagIndex.getNsAt(p.dim, p.x, p.y, p.z);
+                                        hitsSumI += com.wildex999.tickdynamic.listinject.CustomProfiler.lagIndex.getHitsAt(p.dim, p.x, p.y, p.z);
+                                    }
+                                }
+                                if(mb.controller != null) { nsSumI += com.wildex999.tickdynamic.listinject.CustomProfiler.lagIndex.getNsAt(dimI, cxI, cyI, czI); hitsSumI += com.wildex999.tickdynamic.listinject.CustomProfiler.lagIndex.getHitsAt(dimI, cxI, cyI, czI); }
+                            } catch(Throwable ignore) {}
+                            double totalMsI = nsSumI / 1_000_000.0; double avgMsI = hitsSumI > 0 ? (nsSumI / 1_000_000.0) / hitsSumI : 0.0;
+                            boolean penalizedI = false; double probI = 0.0;
+                            try { java.util.concurrent.ConcurrentHashMap<Long, Double> pmI = mod.tileOffenderPenalty.get(Integer.valueOf(dimI)); if(pmI != null) { long keyI = com.wildex999.tickdynamic.TickDynamicMod.packTileKey(cxI, cyI, czI); Double pI = pmI.get(keyI); penalizedI = (pI != null && pI.doubleValue() > 0); probI = penalizedI ? Math.min(0.95, Math.max(0.0, pI.doubleValue())) : 0.0; } } catch(Throwable ignore) {}
+                            tmp.append('{');
+                            num(tmp, "dim", dimI).append(','); num(tmp, "x", cxI).append(','); num(tmp, "y", cyI).append(','); num(tmp, "z", czI).append(',');
+                            field(tmp, "active", mb.isActive).append(',');
+                            num(tmp, "totalMs", totalMsI).append(','); num(tmp, "avgMs", avgMsI).append(','); num(tmp, "hits", hitsSumI).append(',');
+                            field(tmp, "penalized", penalizedI).append(','); num(tmp, "prob", probI);
+                            tmp.append('}');
+                        }
+                        tmp.append(']'); tmp.append('}');
+                    }
+                    tmp.append(']');
+                } else {
+                    tmp.append("[]");
                 }
+                String built = tmp.toString(); sb.append(built); CACHE_MULTIBLOCK_GROUPS.put(dimId, built);
             }
-            java.util.List<java.util.Map.Entry<Long,Integer>> sorted = new java.util.ArrayList<java.util.Map.Entry<Long,Integer>>(chunks.entrySet());
-            java.util.Collections.sort(sorted, new java.util.Comparator<java.util.Map.Entry<Long,Integer>>() { @Override public int compare(java.util.Map.Entry<Long,Integer>a, java.util.Map.Entry<Long,Integer>b){ return Integer.compare(b.getValue(), a.getValue()); } });
-            sb.append('[');
-            int n=0; boolean firstC=true; for(java.util.Map.Entry<Long,Integer> e : sorted){ if(n++>=5) break; if(!firstC) sb.append(','); firstC=false; int cx=(int)(e.getKey()>>32); int cz=(int)(long)e.getKey(); sb.append('{'); num(sb, "cx", cx).append(','); num(sb, "cz", cz).append(','); num(sb, "count", e.getValue().intValue()); sb.append('}'); }
-            sb.append(']');
-        } catch(Throwable t) { sb.append("null"); }
+        } catch(Throwable t) { sb.append("\"multiblockGroups\":null"); logError(dimForErr, "multiblockGroups", t); }
+        // Close world object
         sb.append('}');
     }
 

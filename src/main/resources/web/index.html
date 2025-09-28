@@ -56,18 +56,25 @@
     .hotspot ul { list-style:none; margin:0; padding:0; }
     .hotspot li { display:flex; justify-content:space-between; gap:8px; padding:4px 0; border-top:1px dashed #232a36; }
     .hotspot li:first-child { border-top:0; }
+
+    /* --- TPS/ms graph --- */
+    #tps-graph { width:100%; max-width:700px; height:120px; margin:0 auto 18px; background:rgba(30,34,44,0.7); border-radius:10px; }
+    /* --- Server summary card --- */
+    #server-summary { max-width:700px; margin:18px auto; }
   </style>
 </head>
 <body>
-  <header>
-    <h1>TickDynamic Dashboard</h1>
-    <div class="sub" id="version"></div>
-    <div class="sub" id="status"></div>
-    <div class="sub" id="lastUpdate"></div>
-  </header>
-  <main id="content"></main>
-  <div class="footer">Auto-refreshing every <span id="interval">1000</span> ms — <a href="#" id="toggle">Pause</a> · Refresh: <select id="refreshSel"><option value="1000">1s</option><option value="2000">2s</option><option value="5000" selected>5s</option><option value="10000">10s</option><option value="30000">30s</option></select> · <label><input type="checkbox" id="smartUpdate" checked> Smart updates</label></div>
-  <script>
+    <header>
+      <h1>TickDynamic Dashboard</h1>
+      <div class="sub" id="version"></div>
+      <div class="sub" id="status"></div>
+      <div class="sub" id="lastUpdate"></div>
+    </header>
+    <div id="server-summary"></div>
+    <div id="tps-graph-wrap"><canvas id="tps-graph" width="600" height="120" style="width:100%;max-width:700px;display:block;margin:0 auto 18px;background:rgba(30,34,44,0.7);border-radius:10px;"></canvas></div>
+    <main id="content"></main>
+    <div class="footer">Auto-refreshing every <span id="interval">1000</span> ms — <a href="#" id="toggle">Pause</a> · Refresh: <select id="refreshSel"><option value="1000">1s</option><option value="2000">2s</option><option value="5000" selected>5s</option><option value="10000">10s</option><option value="30000">30s</option></select> · <label><input type="checkbox" id="smartUpdate" checked> Smart updates</label></div>
+    <script>
     const content = document.getElementById('content');
     const version = document.getElementById('version');
     const status = document.getElementById('status');
@@ -221,11 +228,108 @@
       }
     }
 
+    // --- TPS/ms graph state ---
+    const tpsHistory = [];
+    const msHistory = [];
+    const maxHistory = 60;
+    function pushHistory(tps, ms) {
+      if (tpsHistory.length >= maxHistory) tpsHistory.shift();
+      if (msHistory.length >= maxHistory) msHistory.shift();
+      tpsHistory.push(tps);
+      msHistory.push(ms);
+    }
+    function drawGraph() {
+      const canvas = document.getElementById('tps-graph');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      // Draw ms (red) and TPS (blue) lines
+      const w = canvas.width, h = canvas.height;
+      ctx.save();
+      // ms line (red, semi-transparent)
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(231,76,60,0.5)';
+      ctx.lineWidth = 2;
+      for(let i=0;i<msHistory.length;i++){
+        const x = i/(maxHistory-1)*w;
+        const y = h - (Math.min(100, msHistory[i])/100)*h;
+        if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
+      ctx.stroke();
+      // TPS line (blue, semi-transparent)
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(76,201,240,0.5)';
+      ctx.lineWidth = 2;
+      for(let i=0;i<tpsHistory.length;i++){
+        const x = i/(maxHistory-1)*w;
+        const y = h - (Math.min(20, tpsHistory[i])/20)*h;
+        if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
+      ctx.stroke();
+      // Axis labels
+      ctx.fillStyle = '#a9acb3';
+      ctx.font = '12px sans-serif';
+      ctx.fillText('TPS', 10, 16);
+      ctx.fillText('ms', 10, h-8);
+      ctx.restore();
+    }
+    // --- Server summary card ---
+    function renderServerSummary(data) {
+      const el = document.getElementById('server-summary');
+      if (!el) return;
+      const tps = data.averageTPS || 0;
+      const ms = data.lastTickMs || 0;
+      const ent = data.totalLoadedEntities || 0;
+      const te = data.totalLoadedTileEntities || 0;
+      el.innerHTML = `<div class="card" style="margin:18px auto 18px;max-width:700px;background:rgba(22,26,34,0.85);box-shadow:0 2px 8px #0002;">
+        <header><div class="title"><div class="row"><strong>Server Summary</strong></div></div></header>
+        <div class="grid-col" style="gap:0;">
+          <div class="kvs" style="grid-template-columns:repeat(4,1fr);">
+            <div class="kv"><div class="label">TPS</div><div class="value mono">${tps.toFixed(2)}</div></div>
+            <div class="kv"><div class="label">Tick Time</div><div class="value mono">${fmtMs2(ms)}</div></div>
+            <div class="kv"><div class="label">Entities</div><div class="value mono">${fmtNum(ent)}</div></div>
+            <div class="kv"><div class="label">TileEntities</div><div class="value mono">${fmtNum(te)}</div></div>
+          </div>
+        </div>
+      </div>`;
+    }
+    // --- Mini summary by category prefix ---
+    function renderTileCategorySummary(world) {
+      const arr = world.tileCategorySummary||[];
+      if (!arr.length) return '';
+      let html = '<div class="tile-cat-summary" style="display:flex;flex-wrap:wrap;gap:8px 12px;margin:8px 0 10px 0;">';
+      arr.forEach(cat => {
+        html += `<span class="pill mono" style="background:rgba(76,201,240,0.08);color:#4cc9f0;border:1px solid #2a3343;min-width:90px;">${cat.prefix}: <b>${fmtNum(cat.count)}</b> · ${fmtMs2(cat.ms)}</span>`;
+      });
+      html += '</div>';
+      return html;
+    }
+    // --- Sorting toggles for Tile Entities list ---
+    let tileSortKey = 'count';
+    let tileSortDir = -1;
+    function renderTileSortToggles() {
+      return `<div class="small" style="margin-bottom:4px;display:flex;align-items:center;gap:10px;">
+        <span>Sort by:</span>
+        <button type="button" class="toggle" id="sortByCount">Count${tileSortKey==='count'?(tileSortDir>0?' ↑':' ↓'):''}</button>
+        <button type="button" class="toggle" id="sortByMs">Ms${tileSortKey==='ms'?(tileSortDir>0?' ↑':' ↓'):''}</button>
+      </div>`;
+    }
+    function sortTileSummary(arr) {
+      if (!Array.isArray(arr)) return arr;
+      return arr.slice().sort((a,b)=>{
+        if(tileSortKey==='ms') return tileSortDir*(b.ms-a.ms);
+        return tileSortDir*(b.count-a.count);
+      });
+    }
+
     function render(data){
       const useSmartUpdate = smartUpdate.checked;
 
-      // Always update header (it's lightweight)
+      // Always update header and server summary (lightweight)
       updateHeader(data);
+      renderServerSummary(data);
+      pushHistory(data.averageTPS||0, data.lastTickMs||0);
+      drawGraph();
 
       // Check if we need full render or can do smart update
       if (useSmartUpdate && lastData && !dataChanged(data, lastData)) {
@@ -241,7 +345,6 @@
       }
 
       // Full render only when necessary
-      // ...existing code for generating server hotspots and world HTML...
       const worlds = data.worlds||[];
       const allLagTiles = [];
       const allLagChunks = [];
@@ -269,31 +372,33 @@
       const topChunksServer = allLagChunks.slice(0,10);
       const topTypes = Array.from(typeAgg.entries()).map(([name,totalMs])=>({name,totalMs})).sort((a,b)=>b.totalMs-a.totalMs).slice(0,10);
 
-      let serverHtml = '';
+      // Build content (world cards only)
+      let html = '';
+
+      // Optional: show server hotspots card within content area if any
       if(topTilesServer.length || topChunksServer.length || topTypes.length){
-        serverHtml += `<section class="card"><header><div class="title"><div class="row"><strong>Server Hotspots</strong></div><div class="row small">Worlds with players (non-special). Time entries ≥ ${minHs.toFixed(2)} ms</div></div></header>`;
-        serverHtml += `<div class="grid-col"><div class="hotspots">`;
+        html += `<section class="card"><header><div class="title"><div class="row"><strong>Server Hotspots</strong></div><div class="row small">Worlds with players (non-special). Time entries ≥ ${minHs.toFixed(2)} ms</div></div></header>`;
+        html += `<div class="grid-col"><div class="hotspots">`;
         if(topTilesServer.length){
-          serverHtml += `<div class="hotspot"><h4>Top TileEntities (instances by time)</h4><ul>`;
-          topTilesServer.forEach(t=>{ serverHtml += `<li><span>${t.name||''} @ DIM ${t.dim} ${t.x},${t.y},${t.z}</span><span class="mono">${fmtMs2(t.totalMs)}</span></li>`; });
-          serverHtml += `</ul></div>`;
+          html += `<div class="hotspot"><h4>Top TileEntities (instances by time)</h4><ul>`;
+          topTilesServer.forEach(t=>{ html += `<li><span>${t.name||''} @ DIM ${t.dim} ${t.x},${t.y},${t.z}</span><span class="mono">${fmtMs2(t.totalMs)}</span></li>`; });
+          html += `</ul></div>`;
         }
         if(topChunksServer.length){
-          serverHtml += `<div class="hotspot"><h4>Top Chunks (by time)</h4><ul>`;
-          topChunksServer.forEach(c=>{ serverHtml += `<li><span>DIM ${c.dim} (${c.cx}, ${c.cz})</span><span class="mono">${fmtMs2(c.totalMs)}</span></li>`; });
-          serverHtml += `</ul></div>`;
+          html += `<div class="hotspot"><h4>Top Chunks (by time)</h4><ul>`;
+          topChunksServer.forEach(c=>{ html += `<li><span>DIM ${c.dim} (${c.cx}, ${c.cz})</span><span class="mono">${fmtMs2(c.totalMs)}</span></li>`; });
+          html += `</ul></div>`;
         }
         if(topTypes.length){
-          serverHtml += `<div class="hotspot"><h4>Intensive Tile types (by time)</h4><ul>`;
-          topTypes.forEach(t=>{ serverHtml += `<li><span>${t.name||''}</span><span class="mono">${fmtMs2(t.totalMs)}</span></li>`; });
-          serverHtml += `</ul></div>`;
+          html += `<div class="hotspot"><h4>Intensive Tile types (by time)</h4><ul>`;
+          topTypes.forEach(t=>{ html += `<li><span>${t.name||''}</span><span class="mono">${fmtMs2(t.totalMs)}</span></li>`; });
+          html += `</ul></div>`;
         }
-        serverHtml += `</div></div></section>`;
+        html += `</div></div></section>`;
       }
 
-      let html = serverHtml;
       // Show all worlds, even if empty
-      (data.worlds||[]).forEach(w => {
+      (data.worlds||[]).forEach((w, worldIdx) => {
         const wSpeed = (w.worldSpeedPercent!=null ? w.worldSpeedPercent : (w.speedPercent!=null ? w.speedPercent : 100));
         const wActive = !!w.tdActive;
         const eLoaded = w.loadedEntities!=null ? w.loadedEntities : w.totalEntities;
@@ -305,27 +410,25 @@
 
         // Per-world TileEntity hotspots: by count and by time (intensity)
         const ts = w.tileSummary||null;
-        // Show intensity list without filtering by minHotspotMs at world level
         const lt = (w.lagTopTileTypes||[]);
         const lagTiles = (w.lagTopTiles||[]);
-        const topChunks = (w.topChunks||[]);
-        // Always show tile entity section if there are any loaded TEs
+        const topChunks = (w.lagTopChunksTime||[]);
         if(teLoaded > 0) {
           html += `<div class=\"hotspots\">`;
-          // Tile Entities by count - this is the main data you want to see
           if(ts && ts.length > 0){
             html += `<div class="hotspot"><h4>Tile Entities (by count)</h4><ul class="tileSummaryList">`;
             ts.forEach(s=>{
               const label = (s.display && s.display.trim()) ? s.display : (s.name||'unknown');
               const mod = s.modName || s.modId || '';
-              const modDisplay = mod ? ` <span class=\"small\">(${mod})</span>` : '';
+              const modDisplay = mod ? ` <span class="small">(${mod})</span>` : '';
               const isMb = s.multiblock;
               const mbType = s.multiblockType||'';
-              html += `<li class=\"${isMb?'multiblock-tile':''}\"><span>${label}${modDisplay}${isMb?` <span title=\"${mbType}\" style=\"color:#4cc9f0;font-weight:bold;\">[MB]</span>`:''}</span><span class=\"mono\">${fmtNum(s.count)}</span></li>`;
+              const msVal = +s.ms || 0;
+              const right = (msVal>0 ? `${fmtMs2(msVal)} · ` : '') + `${fmtNum(s.count)}`;
+              html += `<li class="${isMb?'multiblock-tile':''}"><span>${label}${modDisplay}${isMb?` <span title="${mbType}" style="color:#4cc9f0;font-weight:bold;">[MB]</span>`:''}</span><span class="mono">${right}</span></li>`;
             });
             html += `</ul></div>`;
           } else {
-            // Show debug info when tile summary is missing
             html += `<div class=\"hotspot\"><h4>Tile Entities (by count)</h4>`;
             html += `<div class=\"small\" style=\"opacity:0.7; padding:8px 0;\">`;
             html += `Tile summary not available (${fmtNum(teLoaded)} TEs loaded).<br>`;
@@ -333,7 +436,6 @@
             html += `</div></div>`;
           }
 
-          // Tile Entities by intensity (time-based lag)
           if(lt && lt.length > 0){
             html += `<div class=\"hotspot\"><h4>Tile Entities (by intensity)</h4><ul>`;
             lt.forEach(t=>{
@@ -347,7 +449,6 @@
             html += `</ul></div>`;
           }
 
-          // Individual lagging tile entities with coordinates
           if(lagTiles && lagTiles.length > 0){
             html += `<div class=\"hotspot\"><h4>Lagging Tile Entities (instances)</h4><ul>`;
             lagTiles.forEach(t=>{
@@ -358,56 +459,38 @@
             html += `</ul></div>`;
           }
 
-          // Top chunks by tile entity count (inspired by OPIS approach)
           if(topChunks && topChunks.length > 0){
-            html += `<div class=\"hotspot\"><h4>Top Chunks (by TE count)</h4><ul>`;
+            html += `<div class=\"hotspot\"><h4>Top Chunks (by time)</h4><ul>`;
             topChunks.forEach(c=>{
               const chunkName = `Chunk (${c.cx}, ${c.cz})`;
-              html += `<li><span>${chunkName}</span><span class=\"mono\">${fmtNum(c.count)} TEs</span></li>`;
+              html += `<li><span>${chunkName}</span><span class=\"mono\">${fmtMs2(c.totalMs)}</span></li>`;
             });
             html += `</ul></div>`;
           }
 
           html += `</div>`;
         } else {
-          // Only show this message when there are truly no tile entities
           html += `<div class=\"small\" style=\"opacity:0.7; padding:0 16px;\">No tile entities loaded in this world.</div>`;
         }
 
-        // Multiblock section (after tile entity section, before group table)
         const mbs = w.multiblocks||[];
         if(mbs.length > 0) {
-          html += `<div class="hotspots"><div class="hotspot"><h4>Detected Multiblocks</h4><div class="table-wrap"><table><thead><tr><th>Type</th><th>Name</th><th>Controller</th><th>Size</th><th>Active</th></tr></thead><tbody>`;
+          html += `<div class="hotspots"><div class="hotspot"><h4>Detected Multiblocks</h4><div class="table-wrap"><table><thead><tr><th>Type</th><th>Name</th><th>Controller</th><th>Size</th><th>Active</th><th>Total Ms</th><th>Avg Ms</th><th>TD Limited</th></tr></thead><tbody>`;
           mbs.forEach(mb => {
             const ctrl = mb.controller ? `${mb.controller.x},${mb.controller.y},${mb.controller.z}` : '';
-            html += `<tr><td>${mb.type||''}</td><td>${mb.displayName||''}</td><td>${ctrl}</td><td>${mb.size||0}</td><td>${mb.active?'<span class="pill ok">Yes</span>':'<span class="pill bad">No</span>'}</td></tr>`;
+            const tdCell = (mb.penalized ? pill('bad', `Yes (${fmtPct((mb.prob||0)*100)})`) : pill('ok', 'No'));
+            html += `<tr><td>${mb.type||''}</td><td>${mb.displayName||''}</td><td>${ctrl}</td><td>${mb.size||0}</td><td>${mb.active?'<span class="pill ok">Yes</span>':'<span class="pill bad">No</span>'}</td><td class="mono">${fmtMs2(mb.totalMs||0)}</td><td class="mono">${fmtMs2(mb.avgMs||0)}</td><td>${tdCell}</td></tr>`;
           });
           html += `</tbody></table></div></div></div>`;
         }
-
-        html += `<div class=\"table-wrap\"><table>\n<thead><tr>\n  <th>Name</th><th>Type</th><th>Count</th><th class=\"col-slice\">Slices</th><th title=\"Budget cap for this group; ∞ means unlimited (>= 2× tick budget).\">Time Max (ms)</th><th>Time Avg (ms)</th><th class=\"col-last\">Time Last (ms)</th><th class=\"col-runAvg\">Run Avg</th><th>Speed</th><th class=\"col-tdlimit\">TD Slowdown</th><th class=\"col-min\">Min</th>\n</tr></thead><tbody>`;
-        let hasTileEntityGroup = false;
-        (w.groups||[]).forEach(g => {
-          const t = g.timing||{};
-          let mins = '';
-          if(g.type==='entity') { mins = `obj ${fmtNum(t.minObjects||0)} · tps ${(t.minTPS||0).toFixed(1)} · time ${(t.minTime||0).toFixed(1)}ms`; }
-          const hasObjects = (g.count||0) > 0;
-          const gSpeed = g.speedPercent!=null ? g.speedPercent : (t.avgTPS!=null? Math.min(100, Math.max(0, (t.avgTPS/20)*100)) : 100);
-          if(g.type==='tileentity') hasTileEntityGroup = true;
-          html += `<tr><td>${g.name||''}</td><td>${g.type||''}</td><td>${fmtNum(g.count)}</td><td class=\"col-slice\">${fmtNum(g.slicesMax)}</td><td>${fmtMs2(t.maxMs)}</td><td>${fmtMs2(t.avgMs)}</td><td class=\"col-last\">${fmtMs2(t.lastMs)}</td><td class=\"col-runAvg\">${fmtNum(t.runAvg)}</td><td>${pill(colorForSpeed(gSpeed), fmtPct(gSpeed))}</td><td class=\"col-tdlimit\">${pill('mono', (g.tdSlowdown!=null?fmtPct(g.tdSlowdown):'—'))}</td><td class=\"col-min\">${mins}</td></tr>`;
-        });
-        if(!hasTileEntityGroup) {
-          html += `<tr><td colspan=\"11\"><em>No tile entities</em></td></tr>`;
-        }
-        html += `</tbody></table></div>`;
+        html += renderMultiblockGroups(w, worldIdx);
         html += `</div></section>`;
       });
 
       if(html !== lastHtml) {
         content.innerHTML = html || '<div class="small" style="opacity:.7">No worlds loaded.</div>';
         lastHtml = html;
-        // Re-attach event listeners for collapse/expand
-        document.querySelectorAll('.card .toggle').forEach(btn => {
+        document.querySelectorAll('.card > header > .toggle').forEach(btn => {
           btn.addEventListener('click', () => {
             const card = btn.closest('.card');
             const nowOpen = card.classList.toggle('collapsed') ? false : true;
@@ -415,9 +498,20 @@
             btn.textContent = nowOpen ? '▾' : '▸';
           });
         });
+        // Bind grouped multiblock show/hide buttons on fresh DOM
+        document.querySelectorAll('button[data-mbg]').forEach(btn => {
+          btn.onclick = function() {
+            const id = btn.getAttribute('data-mbg');
+            const row = document.getElementById(id);
+            if(row) {
+              const open = row.style.display !== '' && row.style.display !== 'table-row';
+              row.style.display = open ? 'table-row' : 'none';
+              btn.textContent = open ? 'Hide' : 'Show';
+            }
+          };
+        });
       }
 
-      // Store last data for comparison
       lastData = JSON.parse(JSON.stringify(data));
     }
 
@@ -439,6 +533,87 @@
     refreshSel.value = String(period);
     startPolling();
     poll();
-  </script>
-</body>
+    // Attach sorting event listeners after render
+    setTimeout(()=>{
+      const btnCount = document.getElementById('sortByCount');
+      const btnMs = document.getElementById('sortByMs');
+      if(btnCount) btnCount.onclick = ()=>{ tileSortKey='count'; tileSortDir*=-1; poll(); };
+      if(btnMs) btnMs.onclick = ()=>{ tileSortKey='ms'; tileSortDir*=-1; poll(); };
+    },0);
+    // Attach dropdown event listeners for grouped multiblocks
+    setTimeout(()=>{
+      document.querySelectorAll('button[data-mbg]').forEach(btn => {
+        btn.onclick = function() {
+          const id = btn.getAttribute('data-mbg');
+          const row = document.getElementById(id);
+          if(row) {
+            const open = row.style.display !== '' && row.style.display !== 'table-row';
+            row.style.display = open ? 'table-row' : 'none';
+            btn.textContent = open ? 'Hide' : 'Show';
+          }
+        };
+      });
+    },0);
+
+    function renderMultiblockGroups(world, worldIdx) {
+      let groups = world.multiblockGroups || [];
+      if (!groups.length) {
+        const mbs = Array.isArray(world.multiblocks) ? world.multiblocks : [];
+        if (mbs.length) {
+          const map = new Map();
+          mbs.forEach(mb => {
+            const type = mb.type || '';
+            const name = mb.displayName || '';
+            const key = type + '|' + name;
+            if (!map.has(key)) map.set(key, { type, displayName: name, instances: [] });
+            const inst = {
+              x: mb.controller && mb.controller.x != null ? mb.controller.x : undefined,
+              y: mb.controller && mb.controller.y != null ? mb.controller.y : undefined,
+              z: mb.controller && mb.controller.z != null ? mb.controller.z : undefined,
+              active: !!mb.active,
+              size: mb.size || 0,
+              totalMs: mb.totalMs || 0,
+              avgMs: mb.avgMs || 0,
+              hits: mb.hits || 0,
+              penalized: !!mb.penalized,
+              prob: mb.prob || 0
+            };
+            map.get(key).instances.push(inst);
+          });
+          groups = Array.from(map.values()).map(g => ({
+            type: g.type,
+            displayName: g.displayName,
+            count: g.instances.length,
+            instances: g.instances
+          }));
+        }
+      }
+      if (!groups.length) return '';
+      let html = `<div class="hotspots"><div class="hotspot"><h4>Grouped Multiblocks</h4><div class="table-wrap"><table><thead><tr><th>Type</th><th>Name</th><th>Count</th><th>Instances</th></tr></thead><tbody>`;
+      groups.forEach((grp, i) => {
+        const type = grp.type || '';
+        const name = grp.displayName || '';
+        const count = grp.count || (grp.instances ? grp.instances.length : 0) || 0;
+        const rowId = `mbg-${worldIdx}-${i}`;
+        html += `<tr><td>${type}</td><td>${name}</td><td>${count}</td><td>`;
+        if (grp.instances && grp.instances.length) {
+          html += `<button class="toggle" data-mbg="${rowId}">Show</button>`;
+          html += `</td></tr>`;
+          html += `<tr id="${rowId}" style="display:none;"><td colspan="4"><ul style="margin:0;padding-left:1em;">`;
+          grp.instances.forEach(inst => {
+            const hasCtrl = inst.x != null && inst.y != null && inst.z != null;
+            const ctrl = hasCtrl ? `${inst.x},${inst.y},${inst.z}` : '';
+            const active = inst.active ? '<span class="pill ok">Yes</span>' : '<span class="pill bad">No</span>';
+            html += `<li>Controller: ${ctrl} · Active: ${active} · Size: ${inst.size||0} · TotalMs: ${fmtMs2(inst.totalMs||0)} · AvgMs: ${fmtMs2(inst.avgMs||0)}${inst.penalized?` · <span class='pill bad'>TD Limited</span>`:''}</li>`;
+          });
+          html += `</ul></td></tr>`;
+        } else {
+          html += `</td></tr>`;
+        }
+      });
+      html += `</tbody></table></div></div></div>`;
+      return html;
+    }
+    </script>
+  </body>
 </html>
