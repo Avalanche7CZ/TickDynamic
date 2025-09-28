@@ -85,15 +85,16 @@
     const smartUpdate = document.getElementById('smartUpdate');
 
     let running = true;
-    let period = 5000; // Default to 5s instead of 1s
+    let period = 5000;
     let lastHtml = '';
     let lastData = null;
     let timerId = null;
+    const openMbg = new Set();
+    const closedMbg = new Set();
 
     function startPolling(){ if(timerId==null){ timerId = setInterval(poll, period); } }
     function stopPolling(){ if(timerId!=null){ clearInterval(timerId); timerId=null; } }
 
-    // Auto-pause when tab is hidden to save resources
     document.addEventListener('visibilitychange', () => {
       if(document.hidden) { stopPolling(); }
       else { if(running) startPolling(); }
@@ -190,6 +191,39 @@
       status.innerHTML = `${pill(colorForPct(pctColor), `${fmtMs(ms)} (${fmtPct(pctRaw)})`)} · TPS ${tps.toFixed(2)} · ${active?pill('ok','TD active'):pill('warn','TD inactive')}`;
     }
 
+    // Render per-world group table (entities/tileentities)
+    function renderGroupTable(world) {
+      const groups = Array.isArray(world.groups) ? world.groups : [];
+      if (!groups.length) return '';
+      const dim = world.dimId;
+      let html = `<div class="table-wrap"><table><thead><tr>`+
+        `<th>Name</th><th>Type</th><th>Count</th><th class="col-slice">SliceMax</th>`+
+        `<th>Time Max</th><th>Time Avg</th><th class="col-last">Time Last</th><th class="col-runAvg">Run Avg</th>`+
+        `<th>Speed</th><th class="col-tdlimit">TD</th>`+
+        `</tr></thead><tbody data-groups-for="${dim}">`;
+      groups.forEach(g => {
+        const t = g.timing || {};
+        const type = (g.type === 'tileentity' || g.type === 'tileEntity') ? 'TileEntity' : 'Entity';
+        const speed = (g.speedPercent != null) ? g.speedPercent : (t.avgTPS != null ? Math.min(100, Math.max(0, (t.avgTPS/20)*100)) : 100);
+        const speedPill = pill(colorForSpeed(speed), fmtPct(speed));
+        const tdPill = g.tdLimited ? pill('bad', 'Limited') : pill('ok', '—');
+        html += `<tr>`+
+          `<td>${g.name||''}</td>`+
+          `<td>${type}</td>`+
+          `<td>${fmtNum(g.count||0)}</td>`+
+          `<td class="col-slice mono">${t.sliceMax!=null?fmtNum(t.sliceMax):fmtNum(g.slicesMax||0)}</td>`+
+          `<td class="mono">${fmtMs2(t.maxMs||0)}</td>`+
+          `<td class="mono">${fmtMs2(t.avgMs||0)}</td>`+
+          `<td class="col-last mono">${fmtMs2(t.lastMs||0)}</td>`+
+          `<td class="col-runAvg mono">${fmtNum(t.runAvg||0)}</td>`+
+          `<td>${speedPill}</td>`+
+          `<td class="col-tdlimit">${tdPill}</td>`+
+        `</tr>`;
+      });
+      html += `</tbody></table></div>`;
+      return html;
+    }
+
     // Update specific world sections without full rebuild
     function updateWorldData(worldElement, worldData) {
       // Update KPIs
@@ -204,24 +238,24 @@
         kvs[2].innerHTML = pill(colorForSpeed(wSpeed), fmtPct(wSpeed));
       }
 
-      // Update group table rows
-      const tbody = worldElement.querySelector('tbody');
-      if (tbody && worldData.groups) {
+      // Update group table rows (target the right tbody)
+      const tbody = worldElement.querySelector(`tbody[data-groups-for="${worldData.dimId}"]`);
+      if (tbody && Array.isArray(worldData.groups)) {
         const rows = tbody.querySelectorAll('tr');
         worldData.groups.forEach((g, i) => {
           if (rows[i]) {
             const cells = rows[i].querySelectorAll('td');
-            if (cells.length >= 9) {
+            if (cells.length >= 10) {
               const t = g.timing || {};
-              const gSpeed = g.speedPercent != null ? g.speedPercent : (t.avgTPS != null ? Math.min(100, Math.max(0, (t.avgTPS/20)*100)) : 100);
-
-              // Update changing cells
-              cells[2].textContent = fmtNum(g.count); // Count
-              cells[5].textContent = fmtMs2(t.avgMs); // Time Avg
-              cells[6].textContent = fmtMs2(t.lastMs); // Time Last
-              cells[7].textContent = fmtNum(t.runAvg); // Run Avg
-              cells[8].innerHTML = pill(colorForSpeed(gSpeed), fmtPct(gSpeed)); // Speed
-              cells[9].innerHTML = pill('mono', (g.tdSlowdown != null ? fmtPct(g.tdSlowdown) : '—')); // TD Slowdown
+              const speed = (g.speedPercent != null) ? g.speedPercent : (t.avgTPS != null ? Math.min(100, Math.max(0, (t.avgTPS/20)*100)) : 100);
+              cells[2].textContent = fmtNum(g.count||0); // Count
+              cells[3].textContent = (t.sliceMax!=null?fmtNum(t.sliceMax):fmtNum(g.slicesMax||0)); // SliceMax
+              cells[4].textContent = fmtMs2(t.maxMs||0); // Time Max
+              cells[5].textContent = fmtMs2(t.avgMs||0); // Time Avg
+              cells[6].textContent = fmtMs2(t.lastMs||0); // Time Last
+              cells[7].textContent = fmtNum(t.runAvg||0); // Run Avg
+              cells[8].innerHTML = pill(colorForSpeed(speed), fmtPct(speed)); // Speed
+              cells[9].innerHTML = g.tdLimited ? pill('bad','Limited') : pill('ok','—'); // TD
             }
           }
         });
@@ -281,6 +315,13 @@
       const ms = data.lastTickMs || 0;
       const ent = data.totalLoadedEntities || 0;
       const te = data.totalLoadedTileEntities || 0;
+      const c2 = data.c2me || {};
+      const c2en = !!c2.enabled;
+      const c2min = ((c2.minTps||0)/100);
+      const c2line = `<div class=\"row small\" style=\"margin-top:8px;\">`+
+        `${c2en?pill('ok','C2ME Prefetch ON'):pill('bad','C2ME OFF')} · `+
+        `R=${c2.radius||0} · perTick=${c2.perTick||0} · minTPS=${c2min.toFixed(2)} · last=${c2.lastPrefetch||0} · total=${(c2.totalPrefetched||0)}${c2.attemptSetSize!=null?` · attempts=${c2.attemptSetSize}`:''}`+
+        `</div>`;
       el.innerHTML = `<div class="card" style="margin:18px auto 18px;max-width:700px;background:rgba(22,26,34,0.85);box-shadow:0 2px 8px #0002;">
         <header><div class="title"><div class="row"><strong>Server Summary</strong></div></div></header>
         <div class="grid-col" style="gap:0;">
@@ -290,6 +331,7 @@
             <div class="kv"><div class="label">Entities</div><div class="value mono">${fmtNum(ent)}</div></div>
             <div class="kv"><div class="label">TileEntities</div><div class="value mono">${fmtNum(te)}</div></div>
           </div>
+          ${c2 && (c2.enabled!=null) ? c2line : ''}
         </div>
       </div>`;
     }
@@ -408,6 +450,9 @@
         html += `<div class=\"grid-col\">`;
         html += `<div class=\"kvs\">\n  <div class=\"kv\"><div class=\"label\">Loaded Entities</div><div class=\"value mono\">${fmtNum(eLoaded)}</div></div>\n  <div class=\"kv\"><div class=\"label\">Loaded TileEntities</div><div class=\"value mono\">${fmtNum(teLoaded)}</div></div>\n  <div class=\"kv\"><div class=\"label\">Speed</div><div class=\"value\">${pill(colorForSpeed(wSpeed), fmtPct(wSpeed))}</div></div>\n</div>`;
 
+        // Group table (entities + tileentities)
+        html += renderGroupTable(w);
+
         // Per-world TileEntity hotspots: by count and by time (intensity)
         const ts = w.tileSummary||null;
         const lt = (w.lagTopTileTypes||[]);
@@ -473,16 +518,7 @@
           html += `<div class=\"small\" style=\"opacity:0.7; padding:0 16px;\">No tile entities loaded in this world.</div>`;
         }
 
-        const mbs = w.multiblocks||[];
-        if(mbs.length > 0) {
-          html += `<div class="hotspots"><div class="hotspot"><h4>Detected Multiblocks</h4><div class="table-wrap"><table><thead><tr><th>Type</th><th>Name</th><th>Controller</th><th>Size</th><th>Active</th><th>Total Ms</th><th>Avg Ms</th><th>TD Limited</th></tr></thead><tbody>`;
-          mbs.forEach(mb => {
-            const ctrl = mb.controller ? `${mb.controller.x},${mb.controller.y},${mb.controller.z}` : '';
-            const tdCell = (mb.penalized ? pill('bad', `Yes (${fmtPct((mb.prob||0)*100)})`) : pill('ok', 'No'));
-            html += `<tr><td>${mb.type||''}</td><td>${mb.displayName||''}</td><td>${ctrl}</td><td>${mb.size||0}</td><td>${mb.active?'<span class="pill ok">Yes</span>':'<span class="pill bad">No</span>'}</td><td class="mono">${fmtMs2(mb.totalMs||0)}</td><td class="mono">${fmtMs2(mb.avgMs||0)}</td><td>${tdCell}</td></tr>`;
-          });
-          html += `</tbody></table></div></div></div>`;
-        }
+        // Multiblock section replaced: render only grouped multiblocks
         html += renderMultiblockGroups(w, worldIdx);
         html += `</div></section>`;
       });
@@ -498,15 +534,25 @@
             btn.textContent = nowOpen ? '▾' : '▸';
           });
         });
-        // Bind grouped multiblock show/hide buttons on fresh DOM
-        document.querySelectorAll('button[data-mbg]').forEach(btn => {
+        // Bind grouped multiblock show/hide buttons on fresh DOM, persist state across renders
+        document.querySelectorAll('button[data-mbgk]').forEach(btn => {
           btn.onclick = function() {
-            const id = btn.getAttribute('data-mbg');
-            const row = document.getElementById(id);
+            const keyRaw = btn.getAttribute('data-mbgk');
+            const rowId = btn.getAttribute('data-target');
+            const row = document.getElementById(rowId);
             if(row) {
-              const open = row.style.display !== '' && row.style.display !== 'table-row';
-              row.style.display = open ? 'table-row' : 'none';
-              btn.textContent = open ? 'Hide' : 'Show';
+              const currentlyOpen = !(row.style.display === 'none');
+              if(currentlyOpen) {
+                row.style.display = 'none';
+                btn.textContent = 'Show';
+                openMbg.delete(keyRaw);
+                closedMbg.add(keyRaw);
+              } else {
+                row.style.display = 'table-row';
+                btn.textContent = 'Hide';
+                openMbg.add(keyRaw);
+                closedMbg.delete(keyRaw);
+              }
             }
           };
         });
@@ -542,20 +588,25 @@
     },0);
     // Attach dropdown event listeners for grouped multiblocks
     setTimeout(()=>{
-      document.querySelectorAll('button[data-mbg]').forEach(btn => {
+      document.querySelectorAll('button[data-mbgk]').forEach(btn => {
         btn.onclick = function() {
-          const id = btn.getAttribute('data-mbg');
-          const row = document.getElementById(id);
+          const keyRaw = btn.getAttribute('data-mbgk');
+          const rowId = btn.getAttribute('data-target');
+          const row = document.getElementById(rowId);
           if(row) {
-            const open = row.style.display !== '' && row.style.display !== 'table-row';
-            row.style.display = open ? 'table-row' : 'none';
-            btn.textContent = open ? 'Hide' : 'Show';
+            const currentlyOpen = !(row.style.display === 'none');
+            if(currentlyOpen) {
+              row.style.display = 'none'; btn.textContent = 'Show'; openMbg.delete(keyRaw); closedMbg.add(keyRaw);
+            } else {
+              row.style.display = 'table-row'; btn.textContent = 'Hide'; openMbg.add(keyRaw); closedMbg.delete(keyRaw);
+            }
           }
         };
       });
     },0);
 
     function renderMultiblockGroups(world, worldIdx) {
+      // Build or use provided groups
       let groups = world.multiblockGroups || [];
       if (!groups.length) {
         const mbs = Array.isArray(world.multiblocks) ? world.multiblocks : [];
@@ -589,17 +640,28 @@
         }
       }
       if (!groups.length) return '';
+      const dim = world.dimId;
+      const single = groups.length === 1;
+      const encodeKey = k => encodeURIComponent(k);
       let html = `<div class="hotspots"><div class="hotspot"><h4>Grouped Multiblocks</h4><div class="table-wrap"><table><thead><tr><th>Type</th><th>Name</th><th>Count</th><th>Instances</th></tr></thead><tbody>`;
       groups.forEach((grp, i) => {
         const type = grp.type || '';
         const name = grp.displayName || '';
         const count = grp.count || (grp.instances ? grp.instances.length : 0) || 0;
-        const rowId = `mbg-${worldIdx}-${i}`;
+        const keyRaw = `${dim}|${type}|${name}`;
+        const key = encodeKey(keyRaw);
+        const rowId = `mbg-row-${key}`;
+        const userClosed = closedMbg.has(keyRaw);
+        const userOpen = openMbg.has(keyRaw);
+        const isOpen = userOpen || (single && !userClosed);
         html += `<tr><td>${type}</td><td>${name}</td><td>${count}</td><td>`;
-        if (grp.instances && grp.instances.length) {
-          html += `<button class="toggle" data-mbg="${rowId}">Show</button>`;
+        const hasInstances = grp.instances && grp.instances.length;
+        if (hasInstances) {
+          const btnLabel = isOpen ? 'Hide' : 'Show';
+          html += `<button class="toggle" data-mbgk="${keyRaw}" data-target="${rowId}">${btnLabel}</button>`;
           html += `</td></tr>`;
-          html += `<tr id="${rowId}" style="display:none;"><td colspan="4"><ul style="margin:0;padding-left:1em;">`;
+          const displayStyle = isOpen ? '' : 'display:none;';
+          html += `<tr id="${rowId}" style="${displayStyle}"><td colspan="4"><ul style="margin:0;padding-left:1em;">`;
           grp.instances.forEach(inst => {
             const hasCtrl = inst.x != null && inst.y != null && inst.z != null;
             const ctrl = hasCtrl ? `${inst.x},${inst.y},${inst.z}` : '';

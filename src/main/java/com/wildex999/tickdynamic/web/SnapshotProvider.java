@@ -53,6 +53,20 @@ public final class SnapshotProvider {
         num(sb, "entityMinSliceTickMs", TickDynamicMod.entityMinSliceTickMs).append(',');
         // min time threshold for hotspot display
         num(sb, "minHotspotMs", mod.webMinHotspotMs).append(',');
+        // C2ME-lite metrics
+        sb.append("\"c2me\":{");
+        boolean c2en = mod.c2meEnabled;
+        field(sb, "enabled", c2en).append(',');
+        num(sb, "radius", mod.c2mePrefetchRadius).append(',');
+        num(sb, "perTick", mod.c2mePrefetchPerTick).append(',');
+        num(sb, "minTps", (long)Math.round(mod.c2mePrefetchMinTps*100)).append(','); // scaled x100 to avoid float parse issues in very old clients
+        int last = 0; long total = 0; int atsz = 0; int it = 0;
+        try { if(mod.c2meManager != null) { last = mod.c2meManager.getLastPrefetchCount(); total = mod.c2meManager.getTotalPrefetched(); atsz = mod.c2meManager.getRecentAttemptSize(); it = mod.c2meManager.getInternalTick(); } } catch(Throwable ignore) {}
+        num(sb, "lastPrefetch", last).append(',');
+        num(sb, "totalPrefetched", total).append(',');
+        num(sb, "attemptSetSize", atsz).append(',');
+        num(sb, "tick", it);
+        sb.append("},");
         // mode info
         boolean hysteresis = mod.activationTpsActivateBelow > 0 && mod.activationTpsDeactivateAbove > mod.activationTpsActivateBelow;
         sb.append("\"mode\":{");
@@ -781,9 +795,46 @@ public final class SnapshotProvider {
                 else needScan = true;
             }
             if(needScan) {
-                java.util.List<TileEntity> tilesBase2;
-                try { java.util.List<?> rawList = (w.loadedTileEntityList instanceof java.util.List) ? (java.util.List<?>)w.loadedTileEntityList : null; tilesBase2 = new java.util.ArrayList<TileEntity>(); if(rawList != null) { for(Object o : rawList) if(o instanceof TileEntity) tilesBase2.add((TileEntity)o); } }
-                catch(Throwable ignore) { tilesBase2 = new java.util.ArrayList<TileEntity>(); }
+                java.util.List<TileEntity> tilesBase2 = new java.util.ArrayList<TileEntity>();
+                if(rawTiles != null && !rawTiles.isEmpty()) tilesBase2.addAll(rawTiles);
+                // Extend with additional candidates from loaded chunks (same approach as 'multiblocks' scan)
+                try {
+                    Object cps = null;
+                    if(w instanceof WorldServer) {
+                        try { java.lang.reflect.Field f = WorldServer.class.getDeclaredField("theChunkProviderServer"); f.setAccessible(true); cps = f.get(w); }
+                        catch(Throwable e1) { try { java.lang.reflect.Field f2 = WorldServer.class.getDeclaredField("chunkProviderServer"); f2.setAccessible(true); cps = f2.get(w); } catch(Throwable e2) { cps = null; } }
+                    }
+                    java.util.List<?> loadedChunks = null;
+                    if(cps != null) {
+                        try { java.lang.reflect.Field fCh = cps.getClass().getDeclaredField("loadedChunks"); fCh.setAccessible(true); Object lc = fCh.get(cps); if(lc instanceof java.util.List) loadedChunks = (java.util.List<?>) lc; } catch(Throwable ignore) {}
+                        if(loadedChunks == null || loadedChunks.isEmpty()) {
+                            try { java.lang.reflect.Field fMap = cps.getClass().getDeclaredField("id2ChunkMap"); fMap.setAccessible(true); Object map = fMap.get(cps); if(map != null) { try { java.lang.reflect.Method mv = map.getClass().getMethod("values"); Object v = mv.invoke(map); if(v instanceof java.util.Collection) loadedChunks = new java.util.ArrayList<Object>((java.util.Collection<?>)v); } catch(Throwable ignore) {} } } catch(Throwable ignore) {}
+                        }
+                    }
+                    int gtMax = Integer.getInteger("tickdynamic.web.multiblock.gtScanMax", 100000);
+                    if(loadedChunks != null) {
+                        java.util.IdentityHashMap<TileEntity, Boolean> seen = new java.util.IdentityHashMap<TileEntity, Boolean>();
+                        for(TileEntity t : tilesBase2) seen.put(t, Boolean.TRUE);
+                        int added = 0;
+                        for(Object ch : loadedChunks) {
+                            if(ch == null) continue;
+                            java.util.Map<?,?> teMap = null;
+                            try { java.lang.reflect.Field fM = ch.getClass().getDeclaredField("chunkTileEntityMap"); fM.setAccessible(true); Object m = fM.get(ch); if(m instanceof java.util.Map) teMap = (java.util.Map<?,?>) m; } catch (Throwable ignore) {}
+                            if(teMap == null) { try { java.lang.reflect.Field fM2 = ch.getClass().getDeclaredField("tileEntityMap"); fM2.setAccessible(true); Object m2 = fM2.get(ch); if(m2 instanceof java.util.Map) teMap = (java.util.Map<?,?>) m2; } catch (Throwable ignore) {} }
+                            if(teMap == null || teMap.isEmpty()) continue;
+                            for(Object o : teMap.values()) {
+                                if(!(o instanceof TileEntity)) continue;
+                                TileEntity te = (TileEntity)o;
+                                if(seen.containsKey(te)) continue;
+                                if(!plausibleGtOrController(te)) continue;
+                                tilesBase2.add(te); seen.put(te, Boolean.TRUE);
+                                if(++added >= gtMax) break;
+                            }
+                            if(added >= gtMax) break;
+                        }
+                    }
+                } catch(Throwable ignore) {}
+
                 StringBuilder tmp = new StringBuilder(4096);
                 tmp.append("\"multiblockGroups\":");
                 if(tilesBase2 != null && !tilesBase2.isEmpty()) {

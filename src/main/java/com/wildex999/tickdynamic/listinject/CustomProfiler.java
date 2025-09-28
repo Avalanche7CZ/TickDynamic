@@ -28,6 +28,59 @@ public class CustomProfiler extends Profiler {
     private int depthCount = 0;
 
     public static final LagIndex lagIndex = new LagIndex();
+    // Captured TE from vanilla tick iteration without swapping lists
+    public static final ThreadLocal<net.minecraft.tileentity.TileEntity> LAST_TE_FETCHED = new ThreadLocal<net.minecraft.tileentity.TileEntity>();
+    // Manual per-TE timing when vanilla iterates tiles (no list swap)
+    private net.minecraft.tileentity.TileEntity manualCurrentTe;
+    private long manualStartNs;
+    private boolean manualActive;
+
+    public synchronized void manualSwitchTe(net.minecraft.tileentity.TileEntity te) {
+        if (te == null) return;
+        if (currentEO != null && currentEO.TD_selfTileEntity != null) return;
+        long now = System.nanoTime();
+        if (manualActive && manualCurrentTe != null) {
+            try {
+                net.minecraft.world.World w = manualCurrentTe.getWorldObj();
+                net.minecraft.world.World wEff = (w != null ? w : ownerWorld);
+                if (wEff != null) {
+                    lagIndex.recordTile(
+                        wEff.provider.dimensionId,
+                        manualCurrentTe.xCoord,
+                        manualCurrentTe.yCoord,
+                        manualCurrentTe.zCoord,
+                        manualCurrentTe,
+                        now - manualStartNs
+                    );
+                }
+            } catch(Throwable ignore) {}
+        }
+        manualCurrentTe = te;
+        manualStartNs = now;
+        manualActive = true;
+    }
+
+    public synchronized void manualFlush() {
+        if (currentEO != null && currentEO.TD_selfTileEntity != null) { manualActive = false; manualCurrentTe = null; return; }
+        if (!manualActive || manualCurrentTe == null) return;
+        long now = System.nanoTime();
+        try {
+            net.minecraft.world.World w = manualCurrentTe.getWorldObj();
+            net.minecraft.world.World wEff = (w != null ? w : ownerWorld);
+            if (wEff != null) {
+                lagIndex.recordTile(
+                    wEff.provider.dimensionId,
+                    manualCurrentTe.xCoord,
+                    manualCurrentTe.yCoord,
+                    manualCurrentTe.zCoord,
+                    manualCurrentTe,
+                    now - manualStartNs
+                );
+            }
+        } catch(Throwable ignore) {}
+        manualActive = false;
+        manualCurrentTe = null;
+    }
 
     public CustomProfiler(Profiler originalProfiler, net.minecraft.world.World world) {
         this.original = originalProfiler;
@@ -108,7 +161,7 @@ public class CustomProfiler extends Profiler {
 
     private boolean isTileListStart(String s) {
         return TILE_START_SECTIONS.contains(s)
-            || (HEURISTICS_ENABLED && containsAny(s, "tile", "ent"));
+            || (HEURISTICS_ENABLED && (s.contains("tile") || s.contains("blockentities") || s.contains("blockentity")));
     }
 
     private boolean isTileTickStart(String s) {
@@ -151,7 +204,6 @@ public class CustomProfiler extends Profiler {
                 } else if (reachedTile && isTileTickStart(s)) {
                     beginTickForCurrentObject();
                 } else if (reachedTile) {
-                    // As soon as we know we're within tile processing, treat any inner section as the tick
                     beginTickForCurrentObject();
                 }
                 break;
@@ -197,16 +249,39 @@ public class CustomProfiler extends Profiler {
                                 }
                             } catch (Throwable ignored) {
                             }
-                        }
-                    }
-                    if (currentEO == null && reachedTile && ownerWorld != null && dur > 0) {
-                        try {
-                            com.wildex999.tickdynamic.timemanager.TimedEntities grp =
-                                TickDynamicMod.tickDynamic != null
-                                    ? TickDynamicMod.tickDynamic.getWorldTimedGroup(ownerWorld, "tileentity", true, true)
-                                    : null;
-                            if (grp != null) grp.setTimeUsed(grp.getTimeUsed() + dur);
-                        } catch (Throwable ignored) {
+                        } else if (reachedTile) {
+                            if (!manualActive) {
+                                net.minecraft.tileentity.TileEntity te = LAST_TE_FETCHED.get();
+                                if (te != null) {
+                                    try {
+                                        net.minecraft.world.World w = te.getWorldObj();
+                                        net.minecraft.world.World wEff = (w != null ? w : ownerWorld);
+                                        if (wEff != null) {
+                                            lagIndex.recordTile(
+                                                wEff.provider.dimensionId,
+                                                te.xCoord,
+                                                te.yCoord,
+                                                te.zCoord,
+                                                te,
+                                                dur
+                                            );
+                                        }
+                                    } catch (Throwable ignore) {
+                                    } finally {
+                                        LAST_TE_FETCHED.remove();
+                                    }
+                                } else {
+                                    if (ownerWorld != null && dur > 0) {
+                                        try {
+                                            com.wildex999.tickdynamic.timemanager.TimedEntities grp =
+                                                TickDynamicMod.tickDynamic != null
+                                                    ? TickDynamicMod.tickDynamic.getWorldTimedGroup(ownerWorld, "tileentity", true, true)
+                                                    : null;
+                                            if (grp != null) grp.setTimeUsed(grp.getTimeUsed() + dur);
+                                        } catch (Throwable ignore) {}
+                                    }
+                                }
+                            }
                         }
                     }
                     currentObjStartNs = 0L;
@@ -228,6 +303,7 @@ public class CustomProfiler extends Profiler {
     public static final class LagIndex {
         private static final int MAX_TILES = Integer.getInteger("tickdynamic.profiler.maxTiles", 2000);
         private static final int MAX_CHUNKS = Integer.getInteger("tickdynamic.profiler.maxChunks", 1000);
+        private static final double DECAY_FACTOR = Double.parseDouble(System.getProperty("tickdynamic.profiler.decayFactor", "0.98"));
 
         private static final class TileKey {
             final int dim, x, y, z;
@@ -358,11 +434,12 @@ public class CustomProfiler extends Profiler {
         }
 
         public synchronized void decay() {
+            if (DECAY_FACTOR >= 1.0) return; // disable decay when >= 1
             for (TileStat ts : tiles.values()) {
-                ts.totalNs = (ts.totalNs * 9) / 10;
+                ts.totalNs = (long) Math.max(0L, Math.floor(ts.totalNs * DECAY_FACTOR));
             }
             for (ChunkStat cs : chunks.values()) {
-                cs.totalNs = (cs.totalNs * 9) / 10;
+                cs.totalNs = (long) Math.max(0L, Math.floor(cs.totalNs * DECAY_FACTOR));
             }
         }
 
