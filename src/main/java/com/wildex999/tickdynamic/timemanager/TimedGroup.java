@@ -23,6 +23,8 @@ public class TimedGroup implements ITimed {
     public final World world;
     public String configEntry;
     public enum GroupType { TileEntity, Entity, Other }
+    protected int targetSliceMax;
+    protected int rampRate = 10; // Max change per tick, configurable
 
     public TimedGroup(TickDynamicMod mod, World world, String name, String configEntry) {
         if(configEntry != null)
@@ -46,6 +48,7 @@ public class TimedGroup implements ITimed {
         if(configEntry != null)
             configSlices = mod.config.get(configEntry, configKeySlicesMax, configSlices).getInt();
         setSliceMax(configSlices);
+        targetSliceMax = sliceMax;
     }
 
     @Override
@@ -67,8 +70,40 @@ public class TimedGroup implements ITimed {
     }
     @Override
     public long getTimeMax() { return timeMax; }
-    @Override
-    public void setSliceMax(int newSliceMax) { sliceMax = newSliceMax; }
+    /**
+     * Set the target sliceMax. The actual sliceMax will ramp toward this value.
+     */
+    public void setSliceMax(int newSliceMax) {
+        this.targetSliceMax = newSliceMax;
+    }
+
+    /**
+     * Gradually ramp sliceMax toward targetSliceMax by at most rampRate per call.
+     * Only allow unthrottling if parent TimeManager allows it.
+     * Call this once per tick.
+     */
+    public void rampSliceMax() {
+        boolean allowUnthrottle = true;
+        if (mod != null && mod.timedObjects != null && mod.timedObjects.containsKey("world")) {
+            Object tm = mod.timedObjects.get("world");
+            if (tm instanceof com.wildex999.tickdynamic.timemanager.TimeManager) {
+                allowUnthrottle = ((com.wildex999.tickdynamic.timemanager.TimeManager)tm).shouldAllowUnthrottle();
+            }
+        }
+        if (sliceMax < targetSliceMax && allowUnthrottle) {
+            sliceMax = Math.min(sliceMax + rampRate, targetSliceMax);
+        } else if (sliceMax > targetSliceMax) {
+            sliceMax = Math.max(sliceMax - rampRate, targetSliceMax);
+        }
+    }
+
+    public void setRampRate(int rate) {
+        this.rampRate = rate;
+    }
+
+    public int getRampRate() {
+        return rampRate;
+    }
     @Override
     public int getSliceMax() { return sliceMax; }
     @Override
@@ -86,6 +121,7 @@ public class TimedGroup implements ITimed {
 
     @Override
     public void newTick(boolean recursive) {
+        rampSliceMax(); // Smoothly adjust sliceMax toward target each tick
         prevTimeUsed = timeUsed;
         prevObjectsRun = objectsRun;
         timeUsed = 0;

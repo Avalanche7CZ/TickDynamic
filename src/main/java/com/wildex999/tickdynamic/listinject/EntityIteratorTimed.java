@@ -39,6 +39,7 @@ public class EntityIteratorTimed implements Iterator<EntityObject> {
 	private int cachedSkipEvery;
 	private int cachedTick;
 	private double cachedMinPenalty;
+	private long lastGtSkipLogTick = -1L;
 
 	public EntityIteratorTimed(ListManager list, int currentAge) {
 		this.list = list;
@@ -51,28 +52,22 @@ public class EntityIteratorTimed implements Iterator<EntityObject> {
 	
 	@Override
 	public boolean hasNext() {
-		if(aborted)
-			return false;
-		if(currentAge != list.age) {
-			// Instead of throwing CME, gracefully abort iteration
+		if (aborted || currentAge != list.age) {
 			abortIteration();
 			return false;
 		}
-		if(remainingCount > 0 && entityList != null && !entityList.isEmpty())
+		if (remainingCount > 0 && entityList != null && !entityList.isEmpty())
 			return true;
-		
-		//Find next group and end timer on current group
-		if(startedTimer && currentGroup != null)
-		{
+		// End timer on current group if needed
+		if (startedTimer && currentGroup != null) {
 			currentGroup.timedGroup.endUpdateObjects(updateCount);
 			currentGroup.timedGroup.endTimer();
 		}
-		
 		updateCount = 0;
 		currentGroup = null;
 		startedTimer = false;
 		entityList = null;
-		cachedPlayers = null; // reset per-group cache
+		cachedPlayers = null;
 		nearR2 = 0;
 		nearBiasActive = false;
 		cachedPenMap = null;
@@ -81,54 +76,47 @@ public class EntityIteratorTimed implements Iterator<EntityObject> {
 		cachedSkipEvery = 3;
 		cachedTick = 0;
 		cachedMinPenalty = 0.0;
-		while(entityList == null) {
+		// Use a local variable for groupIterator to avoid repeated field access
+		Iterator<EntityGroup> localGroupIterator = groupIterator;
+		while (entityList == null) {
+			if (localGroupIterator == null || !localGroupIterator.hasNext())
+				return false;
 			try {
-				if(groupIterator == null || !groupIterator.hasNext())
-					return false;
-				currentGroup = groupIterator.next();
-			} catch(Throwable t) {
-				// Iterator became invalid unexpectedly; abort timed iteration
+				currentGroup = localGroupIterator.next();
+			} catch (Throwable t) {
 				abortIteration();
 				return false;
 			}
-
 			entityList = currentGroup.entities;
-			if(entityList.size() <= 0)
-			{
+			if (entityList.isEmpty()) {
 				entityList = null;
 				continue;
 			}
-			
 			currentOffset = currentGroup.timedGroup.startUpdateObjects();
 			remainingCount = currentGroup.timedGroup.getUpdateCount();
 			updateCount = 0;
-			// Initialize caches for tileentity groups
-			try {
-				if(currentGroup.getGroupType() == EntityType.TileEntity) {
-					TickDynamicMod mod = list.mod;
-					if(mod != null) {
-						// Near-player bias cache
-						if(mod.tileOffenderNearPlayerBias < 1.0) {
-							nearBiasActive = true;
-							int r = Math.max(1, mod.tileOffenderNearPlayerRadius);
-							nearR2 = r*r;
-							java.util.List<?> pls = (list.world instanceof net.minecraft.world.WorldServer) ? ((net.minecraft.world.WorldServer)list.world).playerEntities : list.world.playerEntities;
-							cachedPlayers = (pls != null && !pls.isEmpty()) ? pls : null;
-						}
-						// Offender penalty cache
-						if(TickDynamicMod.tileOffenderDeprioritize && mod.server != null) {
-							cachedDim = (list.world!=null && list.world.provider!=null) ? list.world.provider.dimensionId : Integer.MIN_VALUE;
-							cachedPenMap = mod.tileOffenderPenalty.get(Integer.valueOf(cachedDim));
-							offenderEnabled = (cachedPenMap != null && !cachedPenMap.isEmpty());
-							cachedSkipEvery = Math.max(2, TickDynamicMod.tileOffenderSkipEvery);
-							cachedTick = mod.tickCounter;
-							cachedMinPenalty = mod.tileOffenderSkipMinPenalty;
-						}
+			// Only cache if tile entity group
+			if (currentGroup.getGroupType() == EntityType.TileEntity) {
+				TickDynamicMod mod = list.mod;
+				if (mod != null) {
+					if (mod.tileOffenderNearPlayerBias < 1.0) {
+						nearBiasActive = true;
+						int r = Math.max(1, mod.tileOffenderNearPlayerRadius);
+						nearR2 = r * r;
+						java.util.List<?> pls = (list.world instanceof net.minecraft.world.WorldServer) ? ((net.minecraft.world.WorldServer) list.world).playerEntities : list.world.playerEntities;
+						cachedPlayers = (pls != null && !pls.isEmpty()) ? pls : null;
+					}
+					if (TickDynamicMod.tileOffenderDeprioritize && mod.server != null) {
+						cachedDim = (list.world != null && list.world.provider != null) ? list.world.provider.dimensionId : Integer.MIN_VALUE;
+						cachedPenMap = mod.tileOffenderPenalty.get(cachedDim);
+						offenderEnabled = (cachedPenMap != null && !cachedPenMap.isEmpty());
+						cachedSkipEvery = Math.max(2, TickDynamicMod.tileOffenderSkipEvery);
+						cachedTick = mod.tickCounter;
+						cachedMinPenalty = mod.tileOffenderSkipMinPenalty;
 					}
 				}
-			} catch(Throwable ignore) {}
+			}
 		}
-		
 		return true;
 	}
 
@@ -172,10 +160,25 @@ public class EntityIteratorTimed implements Iterator<EntityObject> {
 			currentOffset = 0;
 		}
 		
+		// Integrate GregTech controller slowdown: skip on off ticks
+		final boolean tileGroup = (currentGroup.getGroupType() == EntityType.TileEntity);
+		final int gtSkipEvery = Math.max(2, Integer.getInteger("tickdynamic.gt.controller.skipEvery", 4));
+		final int serverTick = (list.mod != null) ? list.mod.tickCounter : 0;
+		final boolean gtOffTick = tileGroup && (serverTick % gtSkipEvery) != 0;
+
 		// Fast path: if offender system is disabled or no penalties exist, skip expensive calculations
 		if(!offenderEnabled || cachedPenMap == null || cachedPenMap.isEmpty()) {
-			currentObject = entityList.get(currentOffset);
-			currentOffset++;
+			int tries = 0, size = entityList.size();
+			while(tries < size) {
+				currentObject = entityList.get(currentOffset);
+				currentOffset++;
+				if(currentOffset >= size) currentOffset = 0;
+				if(gtOffTick && currentObject != null) {
+					net.minecraft.tileentity.TileEntity te = currentObject.TD_selfTileEntity;
+					if(te != null && com.wildex999.tickdynamic.util.ModTileEntityUtils.isGregTechMultiblockController(te)) { tries++; logGtSkipOnce(); continue; }
+				}
+				break;
+			}
 			updateCount++;
 			remainingCount--;
 			CURRENT.set(currentObject);
@@ -200,66 +203,50 @@ public class EntityIteratorTimed implements Iterator<EntityObject> {
             try {
                 net.minecraft.tileentity.TileEntity te = cand.TD_selfTileEntity;
                 if(te != null) {
-                    long key = com.wildex999.tickdynamic.TickDynamicMod.packTileKey(te.xCoord, te.yCoord, te.zCoord);
-                    Double pObj = cachedPenMap.get(key);
-                    if(pObj != null) {
-                        double p = pObj.doubleValue();
-                        if(p >= cachedMinPenalty) {
-                            // Guarantee every Nth tick runs to avoid starvation
-                            if(!isSkipTick) {
-                                skip = false; // Force run on guaranteed ticks
-                            } else {
-                                // Simplified pseudo-random with fewer operations
-                                long mix = key ^ tickMix;
-                                mix ^= (mix >>> 16); mix *= 0x45d9f3bL; mix ^= (mix >>> 16);
-                                // Map to [0,1) with reduced precision for speed
-                                double u = ((mix >>> 16) & 0xFFFF) / 65536.0;
-                                double prob = Math.min(0.95, Math.max(0, p));
-
-                                // Simplified near-player bias (only if active and players exist)
-                                if(nearBiasActive && cachedPlayers != null) {
-                                    // Quick distance check without sqrt - use squared distance
-                                    boolean near = false;
-                                    for(Object po : cachedPlayers) {
-                                        if(!(po instanceof net.minecraft.entity.player.EntityPlayer)) continue;
-                                        net.minecraft.entity.player.EntityPlayer pl = (net.minecraft.entity.player.EntityPlayer)po;
-                                        int dx = ((int)pl.posX) - te.xCoord;
-                                        int dy = ((int)pl.posY) - te.yCoord;
-                                        int dz = ((int)pl.posZ) - te.zCoord;
-                                        int d2 = dx*dx + dy*dy + dz*dz;
-                                        if(d2 <= nearR2) {
-                                            near = true;
-                                            break;
+                    // Force skip for GT controller on off ticks
+                    if(gtOffTick && com.wildex999.tickdynamic.util.ModTileEntityUtils.isGregTechMultiblockController(te)) {
+                        skip = true; logGtSkipOnce();
+                    } else {
+                        long key = com.wildex999.tickdynamic.TickDynamicMod.packTileKey(te.xCoord, te.yCoord, te.zCoord);
+                        Double pObj = cachedPenMap.get(key);
+                        if(pObj != null) {
+                            double p = pObj.doubleValue();
+                            if(p >= cachedMinPenalty) {
+                                if(!isSkipTick) {
+                                    skip = false;
+                                } else {
+                                    long mix = key ^ tickMix;
+                                    mix ^= (mix >>> 16); mix *= 0x45d9f3bL; mix ^= (mix >>> 16);
+                                    double u = ((mix >>> 16) & 0xFFFF) / 65536.0;
+                                    double prob = Math.min(0.95, Math.max(0, p));
+                                    if(nearBiasActive && cachedPlayers != null) {
+                                        boolean near = false;
+                                        for(Object po : cachedPlayers) {
+                                            if(!(po instanceof net.minecraft.entity.player.EntityPlayer)) continue;
+                                            net.minecraft.entity.player.EntityPlayer pl = (net.minecraft.entity.player.EntityPlayer)po;
+                                            int dx = ((int)pl.posX) - te.xCoord;
+                                            int dy = ((int)pl.posY) - te.yCoord;
+                                            int dz = ((int)pl.posZ) - te.zCoord;
+                                            int d2 = dx*dx + dy*dy + dz*dz;
+                                            if(d2 <= nearR2) { near = true; break; }
                                         }
+                                        if(near) prob *= Math.max(0.0, list.mod.tileOffenderNearPlayerBias);
                                     }
-                                    if(near) prob *= Math.max(0.0, list.mod.tileOffenderNearPlayerBias);
+                                    skip = (u < prob);
                                 }
-
-                                skip = (u < prob);
                             }
                         }
                     }
                 }
             } catch(Throwable ignore) {
-                // On any error, don't skip to be safe
                 skip = false;
             }
 
-            if(!skip) {
-                chosenIndex = idx;
-                break;
-            }
-
-            // Move to next candidate
-            currentOffset++;
-            if(currentOffset >= size) currentOffset = 0;
-            attempts++;
+            if(!skip) { chosenIndex = idx; break; }
+            currentOffset++; if(currentOffset >= size) currentOffset = 0; attempts++;
         }
 
-        // If we couldn't find a non-skipped candidate, just take the current one
-        if(chosenIndex == -1) {
-            chosenIndex = currentOffset;
-        }
+        if(chosenIndex == -1) { chosenIndex = currentOffset; }
 
         currentObject = entityList.get(chosenIndex);
         currentOffset = chosenIndex + 1;
@@ -289,6 +276,18 @@ public class EntityIteratorTimed implements Iterator<EntityObject> {
 
 		if(currentOffset < 0)
 			currentOffset = 0;
+	}
+
+	private void logGtSkipOnce() {
+		if(!com.wildex999.tickdynamic.TickDynamicMod.debug) return;
+		try {
+			long t = (list.world != null) ? list.world.getTotalWorldTime() : -1L;
+			if(t != lastGtSkipLogTick) {
+				int dim = (list.world!=null && list.world.provider!=null) ? list.world.provider.dimensionId : 0;
+				System.out.println("[TickDynamic][GT] Skipping controller tick (off-tick) in DIM " + dim + ", iterator slice.");
+				lastGtSkipLogTick = t;
+			}
+		} catch(Throwable ignore) {}
 	}
 
 }

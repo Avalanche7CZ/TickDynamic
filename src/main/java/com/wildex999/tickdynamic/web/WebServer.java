@@ -19,6 +19,10 @@ public class WebServer {
     private final String token;
     private HttpServer server;
     private final AtomicReference<String> latestSnapshot = new AtomicReference<>("{}\n");
+    // Optional runtime flags
+    private final boolean corsEnabled = Boolean.parseBoolean(System.getProperty("tickdynamic.web.cors.enabled", "false"));
+    private final String corsOrigin = System.getProperty("tickdynamic.web.cors.origin", "*");
+    private final boolean gzipEnabled = Boolean.parseBoolean(System.getProperty("tickdynamic.web.gzip.enabled", "true"));
 
     public WebServer(TickDynamicMod mod, String bind, int port, String token) {
         this.mod = mod;
@@ -58,36 +62,109 @@ public class WebServer {
             }
         }
         String hdr = exchange.getRequestHeaders().getFirst("X-Auth-Token");
-        return token.equals(hdr);
+        if(token.equals(hdr)) return true;
+        // Support Authorization: Bearer <token>
+        String auth = exchange.getRequestHeaders().getFirst("Authorization");
+        if(auth != null) {
+            String trimmed = auth.trim();
+            if(trimmed.regionMatches(true, 0, "Bearer ", 0, 7)) {
+                String t = trimmed.substring(7).trim();
+                if(token.equals(t)) return true;
+            }
+        }
+        return false;
     }
 
-    private static void writeText(HttpExchange exchange, int code, String body) throws IOException {
-        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+    private void applyCommonHeaders(HttpExchange exchange) {
+        // Security and cache headers
+        exchange.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
+        if(corsEnabled) {
+            exchange.getResponseHeaders().set("Access-Control-Allow-Origin", corsOrigin);
+            exchange.getResponseHeaders().set("Vary", "Origin");
+            exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, OPTIONS");
+            exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "X-Auth-Token, Authorization, Content-Type");
+        }
+    }
+
+    private void writeWithOptionalGzip(HttpExchange exchange, int code, String contentType, byte[] bytes) throws IOException {
+        applyCommonHeaders(exchange);
+        exchange.getResponseHeaders().set("Content-Type", contentType);
+        // Optional gzip if requested and beneficial
+        byte[] payload = bytes;
+        boolean gzip = false;
+        if(gzipEnabled && bytes != null && bytes.length > 256) {
+            String ae = exchange.getRequestHeaders().getFirst("Accept-Encoding");
+            if(ae != null && ae.toLowerCase().contains("gzip")) {
+                try {
+                    java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream(bytes.length);
+                    try(java.util.zip.GZIPOutputStream gos = new java.util.zip.GZIPOutputStream(bos)) {
+                        gos.write(bytes);
+                    }
+                    payload = bos.toByteArray();
+                    gzip = true;
+                } catch(Throwable t) {
+                    // fall back to plain payload
+                    payload = bytes;
+                    gzip = false;
+                }
+            }
+        }
+        if(gzip) exchange.getResponseHeaders().set("Content-Encoding", "gzip");
+        exchange.sendResponseHeaders(code, payload.length);
+        try(OutputStream os = exchange.getResponseBody()) { os.write(payload); }
+    }
+
+    private void unauthorized(HttpExchange exchange) throws IOException {
+        applyCommonHeaders(exchange);
         exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
-        exchange.sendResponseHeaders(code, bytes.length);
-        try(OutputStream os = exchange.getResponseBody()) { os.write(bytes); }
+        exchange.getResponseHeaders().set("WWW-Authenticate", "Bearer");
+        byte[] body = "unauthorized\n".getBytes(StandardCharsets.UTF_8);
+        exchange.sendResponseHeaders(401, body.length);
+        try(OutputStream os = exchange.getResponseBody()) { os.write(body); }
     }
 
-    private static void writeJson(HttpExchange exchange, int code, String body) throws IOException {
+    private void methodNotAllowed(HttpExchange exchange) throws IOException {
+        applyCommonHeaders(exchange);
+        byte[] body = "method not allowed\n".getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
+        exchange.sendResponseHeaders(405, body.length);
+        try(OutputStream os = exchange.getResponseBody()) { os.write(body); }
+    }
+
+    private void preflightOptions(HttpExchange exchange) throws IOException {
+        applyCommonHeaders(exchange);
+        // No body for preflight
+        exchange.sendResponseHeaders(204, -1);
+        exchange.close();
+    }
+
+    private void writeText(HttpExchange exchange, int code, String body) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+        writeWithOptionalGzip(exchange, code, "text/plain; charset=utf-8", bytes);
+    }
+
+    private void writeJson(HttpExchange exchange, int code, String body) throws IOException {
+        // Debug log for JSON output (guarded)
+        if (TickDynamicMod.debug && body != null && body.length() > 0) {
+            System.out.println("[TickDynamic-Web] Sending JSON (" + body.length() + " bytes)");
+        }
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Cache-Control", "no-store");
-        exchange.sendResponseHeaders(code, bytes.length);
-        try(OutputStream os = exchange.getResponseBody()) { os.write(bytes); }
+        writeWithOptionalGzip(exchange, code, "application/json; charset=utf-8", bytes);
     }
 
     private class RootHandler implements HttpHandler {
         @Override public void handle(HttpExchange exchange) throws IOException {
-            if(!authorized(exchange)) { writeText(exchange, 401, "unauthorized\n"); return; }
-            if(!exchange.getRequestMethod().equalsIgnoreCase("GET")) { writeText(exchange, 405, "method not allowed\n"); return; }
+            if("OPTIONS".equalsIgnoreCase(exchange.getRequestMethod())) { preflightOptions(exchange); return; }
+            if(!authorized(exchange)) { unauthorized(exchange); return; }
+            if(!exchange.getRequestMethod().equalsIgnoreCase("GET")) { methodNotAllowed(exchange); return; }
             String path = exchange.getRequestURI().getPath();
             if(path.equals("/") || path.equals("/index.html")) {
-                InputStream is = getClass().getClassLoader().getResourceAsStream("web/index.html");
-                if(is == null) { writeText(exchange, 404, "missing dashboard\n"); return; }
-                byte[] buf = readAll(is);
-                exchange.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
-                exchange.sendResponseHeaders(200, buf.length);
-                try(OutputStream os = exchange.getResponseBody()) { os.write(buf); }
+                try (InputStream is = getClass().getClassLoader().getResourceAsStream("web/index.html")) {
+                    if(is == null) { writeText(exchange, 404, "missing dashboard\n"); return; }
+                    byte[] buf = readAll(is);
+                    writeWithOptionalGzip(exchange, 200, "text/html; charset=utf-8", buf);
+                }
                 return;
             }
             writeText(exchange, 404, "not found\n");
@@ -96,17 +173,22 @@ public class WebServer {
 
     private class MetricsHandler implements HttpHandler {
         @Override public void handle(HttpExchange exchange) throws IOException {
-            if(!authorized(exchange)) { writeText(exchange, 401, "unauthorized\n"); return; }
-            if(!exchange.getRequestMethod().equalsIgnoreCase("GET")) { writeText(exchange, 405, "method not allowed\n"); return; }
+            if("OPTIONS".equalsIgnoreCase(exchange.getRequestMethod())) { preflightOptions(exchange); return; }
+            if(!authorized(exchange)) { unauthorized(exchange); return; }
+            if(!exchange.getRequestMethod().equalsIgnoreCase("GET")) { methodNotAllowed(exchange); return; }
             writeJson(exchange, 200, latestSnapshot.get());
         }
     }
 
     private static byte[] readAll(InputStream is) throws IOException {
         byte[] buf = new byte[8192];
-        int len, total = 0;
+        int len;
         java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
-        while((len = is.read(buf)) != -1) { out.write(buf, 0, len); total += len; }
+        try {
+            while((len = is.read(buf)) != -1) { out.write(buf, 0, len); }
+        } finally {
+            try { is.close(); } catch (IOException ignore) {}
+        }
         return out.toByteArray();
     }
 }

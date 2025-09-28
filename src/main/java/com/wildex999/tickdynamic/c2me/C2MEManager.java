@@ -51,6 +51,25 @@ public class C2MEManager {
         for(Object o: players){ if(budget<=0) break; if(!(o instanceof EntityPlayerMP)) continue; EntityPlayerMP p=(EntityPlayerMP)o; WorldServer ws=(WorldServer)p.worldObj; if(ws==null) continue; if(!dimAllowed(ws.provider.dimensionId)) continue; budget = prefetchForPlayer(ws,p,budget); }
     }
 
+    // One-shot burst for login/respawn/dimension change; returns number of chunks attempted
+    public int prefetchBurstForPlayer(WorldServer world, EntityPlayerMP player, int radius, int budget){
+        if(world == null || player == null) return 0;
+        if(budget <= 0 || radius <= 0) return 0;
+        if(!dimAllowed(world.provider.dimensionId)) return 0;
+        int viewDist = 10; try { viewDist = mod.server.getConfigurationManager().getViewDistance(); } catch(Throwable ignore){}
+        int centerChunkX = (int)Math.floor(player.posX) >> 4; int centerChunkZ = (int)Math.floor(player.posZ) >> 4;
+        int startR = viewDist + 1; int endR = viewDist + radius; if(endR < startR) return 0;
+        ChunkProviderServer cps = (ChunkProviderServer)world.theChunkProviderServer;
+        int attempted = 0;
+        for(int r=startR; r<=endR && budget>0; r++){
+            for(int dx=-r; dx<=r && budget>0; dx++){
+                int absDx = dx<0?-dx:dx; int remaining = r-absDx; int[] dzCandidates = new int[]{-remaining, remaining};
+                for(int dz: dzCandidates){ if(dz==0 && remaining!=0) continue; int x=centerChunkX+dx; int z=centerChunkZ+dz; if(chunkLoaded(cps,x,z)) continue; String key=world.provider.dimensionId+":"+x+":"+z; Integer last=recentAttemptsTick.get(key); if(last!=null && internalTick-last<60) continue; try{ Chunk c=cps.provideChunk(x,z); if(c!=null){ totalPrefetched++; lastPrefetchCount++; budget--; attempted++; recentAttemptsTick.put(key, internalTick); if(mod.c2meDebug) System.out.println("[TickDynamic][C2ME] Burst prefetched dim="+world.provider.dimensionId+" x="+x+" z="+z); } }catch(Throwable t){ if(mod.c2meDebug) System.out.println("[TickDynamic][C2ME] Burst prefetch failed: "+t.getMessage()); recentAttemptsTick.put(key, internalTick);} if(budget<=0) break; }
+            }
+        }
+        return attempted;
+    }
+
     private void pruneOldAttempts(int age){ Iterator<Map.Entry<String,Integer>> it = recentAttemptsTick.entrySet().iterator(); while(it.hasNext()){ Map.Entry<String,Integer> e = it.next(); if(internalTick - e.getValue() > age) it.remove(); } }
 
     private int prefetchForPlayer(WorldServer world, EntityPlayerMP player, int budget){

@@ -2,6 +2,7 @@ package com.wildex999.tickdynamic.timemanager;
 
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.List;
 import net.minecraft.world.World;
 import com.wildex999.tickdynamic.TickDynamicMod;
@@ -17,6 +18,13 @@ public class TimeManager implements ITimed {
     public final TickDynamicMod mod;
     public final World world;
     public String configEntry;
+
+    // Throttling control fields
+    private static final int TICK_HISTORY_SIZE = 100; // Configurable window
+    private static final long THROTTLE_THRESHOLD_MS = 50; // ms, throttle if tick >= this
+    private static final long UNTHROTTLE_THRESHOLD_MS = 40; // ms, only unthrottle if avg < this
+    private final LinkedList<Long> tickTimeHistory = new LinkedList<>();
+    private boolean canUnthrottle = false;
 
     public TimeManager(TickDynamicMod mod, World world, String name, String configEntry) {
         children = new ArrayList<>();
@@ -177,4 +185,27 @@ public class TimeManager implements ITimed {
     @Override
     public boolean isManager() { return true; }
     public List<ITimed> getChildren() { return children; }
+
+    /**
+     * Call this at the end of each tick to record tick time and update throttling state.
+     * @param tickTimeMs Tick duration in ms
+     */
+    public void recordTickTime(long tickTimeMs) {
+        tickTimeHistory.addLast(tickTimeMs);
+        if (tickTimeHistory.size() > TICK_HISTORY_SIZE) tickTimeHistory.removeFirst();
+        // Compute moving average
+        long sum = 0;
+        for (long t : tickTimeHistory) sum += t;
+        long avg = tickTimeHistory.isEmpty() ? 0 : sum / tickTimeHistory.size();
+        // Only allow unthrottling if avg is well below threshold for the whole window
+        canUnthrottle = (avg < UNTHROTTLE_THRESHOLD_MS && tickTimeHistory.size() == TICK_HISTORY_SIZE);
+    }
+
+    /**
+     * Use this to decide if a group can increase its sliceMax (unthrottle).
+     * @return true if unthrottling is allowed, false otherwise
+     */
+    public boolean shouldAllowUnthrottle() {
+        return canUnthrottle;
+    }
 }

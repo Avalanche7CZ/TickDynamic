@@ -217,12 +217,18 @@ public class ListManager implements List<EntityObject> {
 	public void assignToGroup(EntityObject object) {
 		if(object == null)
 			return;
-		
 		EntityGroup group = object.TD_entityGroup;
 		if(group != null)
 			group.removeEntity(object);
-		
-		Class<?> cls = object.getClass();
+		// Determine the real class to use for grouping
+		Class<?> cls;
+		if(object.TD_selfTileEntity != null) {
+			cls = object.TD_selfTileEntity.getClass();
+		} else if(object.TD_selfEntity != null) {
+			cls = object.TD_selfEntity.getClass();
+		} else {
+			cls = object.getClass();
+		}
 		group = groupMap.get(cls);
 		if(group == null) {
 			// Try to resolve group by superclass/interface to handle subclassed Entities/TileEntities (e.g., multiblocks)

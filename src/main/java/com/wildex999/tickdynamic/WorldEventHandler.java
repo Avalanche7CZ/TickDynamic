@@ -5,22 +5,17 @@ import java.util.List;
 
 import com.wildex999.tickdynamic.listinject.CustomProfiler;
 import com.wildex999.tickdynamic.listinject.EntityObject;
-import com.wildex999.tickdynamic.listinject.EntityType;
-import com.wildex999.tickdynamic.listinject.ListManager;
 import com.wildex999.tickdynamic.listinject.ListManagerEntities;
 import com.wildex999.tickdynamic.listinject.ListManagerTileEntities;
 import com.wildex999.tickdynamic.timemanager.ITimed;
-import com.wildex999.tickdynamic.timemanager.TimeManager;
 import com.wildex999.tickdynamic.timemanager.TimedEntities;
 
 import net.minecraft.profiler.Profiler;
 import net.minecraft.world.World;
-import net.minecraftforge.common.ForgeChunkManager;
 import net.minecraftforge.event.world.WorldEvent;
 import cpw.mods.fml.common.eventhandler.EventPriority;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.TickEvent.Phase;
-import cpw.mods.fml.common.gameevent.TickEvent.ServerTickEvent;
 import cpw.mods.fml.common.gameevent.TickEvent.WorldTickEvent;
 import cpw.mods.fml.relauncher.ReflectionHelper;
 
@@ -28,7 +23,7 @@ public class WorldEventHandler {
     public TickDynamicMod mod;
 
     private HashMap<World, ListManagerEntities> entityListManager;
-    private HashMap<World, ListManager> tileListManager;
+    private HashMap<World, ListManagerTileEntities> tileListManager;
 
     public WorldEventHandler(TickDynamicMod mod) {
         this.mod = mod;
@@ -37,7 +32,7 @@ public class WorldEventHandler {
     }
 
     public ListManagerEntities getEntityManager(World w) { return entityListManager.get(w); }
-    public ListManager getTileManager(World w) { return tileListManager.get(w); }
+    public ListManagerTileEntities getTileManager(World w) { return tileListManager.get(w); }
 
     @SubscribeEvent
     public void worldTickEvent(WorldTickEvent event) {
@@ -58,61 +53,105 @@ public class WorldEventHandler {
     public void onDimensionLoad(WorldEvent.Load event) {
         if(TickDynamicMod.isRemote(event.world)) return;
 
-        if(mod.debug) System.out.println("World load: " + event.world.provider.getDimensionName());
+        if(TickDynamicMod.debug) System.out.println("World load: " + event.world.provider.getDimensionName());
 
         try {
             setCustomProfiler(event.world, new CustomProfiler(event.world.theProfiler, event.world));
         } catch(Exception e) {
             System.err.println("Unable to set TickDynamic World profiler! World will not be using TickDynamic: " + event.world);
-            System.err.println(e);
+            e.printStackTrace();
             return;
         }
 
         ListManagerEntities entityManager = new ListManagerEntities(event.world, mod);
         entityListManager.put(event.world, entityManager);
 
-        ListManager tileEntityManager = null;
+        ListManagerTileEntities tileEntityManager = null;
         if(!TickDynamicMod.disableTileEntityControl) {
             tileEntityManager = new ListManagerTileEntities(event.world, mod);
             tileListManager.put(event.world, tileEntityManager);
-        } else if(mod.debug) {
+        } else if(TickDynamicMod.debug) {
             System.out.println("[TickDynamic] TileEntity control disabled; not injecting tile list for world: " + event.world.provider.getDimensionName());
         }
 
-        if(mod.debug) System.out.println("Adding " + event.world.loadedEntityList.size() + " existing Entities.");
+        if(TickDynamicMod.debug) System.out.println("Adding " + event.world.loadedEntityList.size() + " existing Entities.");
         List<EntityObject> oldList = event.world.loadedEntityList;
         event.world.loadedEntityList = entityManager;
         for(EntityObject obj : oldList) { entityManager.add(obj); }
 
-        if(!TickDynamicMod.disableTileEntityControl) {
-            if(mod.debug) System.out.println("Adding " + event.world.loadedTileEntityList.size() + " existing TileEntities.");
-            List<EntityObject> oldTileList = (List<EntityObject>)(List<?>)event.world.loadedTileEntityList;
+        // TE injection: only apply if both lists will be consistent (tickable and loaded)
+        boolean swapTickable = Boolean.parseBoolean(System.getProperty("tickdynamic.tile.swapTickableList", "false"));
+        // Optional dimension whitelist for TE injection
+        String dimListProp = System.getProperty("tickdynamic.tile.injectDims", "").trim();
+        java.util.HashSet<Integer> dimWhitelist = null;
+        if(!dimListProp.isEmpty()) {
+            dimWhitelist = new java.util.HashSet<Integer>();
+            for(String part : dimListProp.split(",")) {
+                try { dimWhitelist.add(Integer.parseInt(part.trim())); } catch(Throwable ignore) {}
+            }
+        }
+        boolean dimAllowed = (dimWhitelist == null) || dimWhitelist.contains(event.world.provider.dimensionId);
+        if(!TickDynamicMod.disableTileEntityControl && swapTickable && dimAllowed) {
+            if(TickDynamicMod.debug) System.out.println("Adding " + event.world.loadedTileEntityList.size() + " existing TileEntities.");
+            List<?> oldTileList = event.world.loadedTileEntityList;
             event.world.loadedTileEntityList = tileEntityManager;
-            for(EntityObject obj : oldTileList) { tileEntityManager.add(obj); }
+            java.util.Set<net.minecraft.tileentity.TileEntity> added = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<net.minecraft.tileentity.TileEntity, Boolean>());
+            for(Object obj : oldTileList) {
+                net.minecraft.tileentity.TileEntity te = null;
+                if(obj instanceof net.minecraft.tileentity.TileEntity) te = (net.minecraft.tileentity.TileEntity)obj;
+                else if(obj instanceof EntityObject) {
+                    EntityObject eo = (EntityObject)obj; te = eo.TD_selfTileEntity;
+                }
+                if(te != null && added.add(te)) {
+                    if(tileEntityManager != null) tileEntityManager.add(te);
+                }
+            }
             try {
-                @SuppressWarnings("unchecked")
-                List<EntityObject> tickList = (List<EntityObject>)(List<?>)ReflectionHelper.getPrivateValue(World.class, event.world,
+                List<?> tickList = (List<?>)ReflectionHelper.getPrivateValue(World.class, event.world,
                         "tickableTileEntities",
                         "field_147484_a"
                 );
                 if(tickList != null && tickList != tileEntityManager) {
-                    if(mod.debug) System.out.println("[TickDynamic] Swapping tickableTileEntities (found) with ListManagerTileEntities, migrating " + tickList.size() + " entries.");
-                    for(EntityObject obj : tickList) { tileEntityManager.add(obj); }
+                    if(TickDynamicMod.debug) System.out.println("[TickDynamic] Swapping tickableTileEntities (found) with ListManagerTileEntities, migrating " + tickList.size() + " entries.");
+                    for(Object obj : tickList) {
+                        net.minecraft.tileentity.TileEntity te = null;
+                        if(obj instanceof net.minecraft.tileentity.TileEntity) te = (net.minecraft.tileentity.TileEntity)obj;
+                        else if(obj instanceof EntityObject) { EntityObject eo = (EntityObject)obj; te = eo.TD_selfTileEntity; }
+                        if(te != null && added.add(te)) {
+                            if(tileEntityManager != null) tileEntityManager.add(te);
+                        }
+                    }
                     ReflectionHelper.setPrivateValue(World.class, event.world, tileEntityManager,
                             "tickableTileEntities", "field_147484_a");
-                } else if(mod.debug) {
-                    System.out.println("[TickDynamic] tickableTileEntities field not found or already swapped; continuing with loadedTileEntityList only.");
+                } else if(TickDynamicMod.debug) {
+                    System.out.println("[TickDynamic] tickableTileEntities field not found or already swapped; reverting loadedTileEntityList injection.");
+                    // Revert loaded list if we can't safely swap tickable list
+                    try {
+                        // Best-effort: create a new ArrayList from our manager to restore
+                        java.util.ArrayList<net.minecraft.tileentity.TileEntity> restore = new java.util.ArrayList<net.minecraft.tileentity.TileEntity>();
+                        for(net.minecraft.tileentity.TileEntity te2 : tileEntityManager) restore.add(te2);
+                        event.world.loadedTileEntityList = (java.util.List)restore;
+                    } catch(Throwable ignore) {}
                 }
             } catch(Throwable t) {
-                if(mod.debug) System.out.println("[TickDynamic] Could not swap tickableTileEntities list: " + t.getMessage());
+                if(TickDynamicMod.debug) System.out.println("[TickDynamic] Could not swap tickableTileEntities list: " + t.getMessage());
+                // Revert loaded list to minimize risk
+                try {
+                    java.util.ArrayList<net.minecraft.tileentity.TileEntity> restore = new java.util.ArrayList<net.minecraft.tileentity.TileEntity>();
+                    for(net.minecraft.tileentity.TileEntity te2 : tileEntityManager) restore.add(te2);
+                    event.world.loadedTileEntityList = (java.util.List)restore;
+                } catch(Throwable ignore) {}
             }
+        } else if(!TickDynamicMod.disableTileEntityControl && TickDynamicMod.debug) {
+            if(!dimAllowed) System.out.println("[TickDynamic] TE injection skipped for DIM " + event.world.provider.dimensionId + " (not in tickdynamic.tile.injectDims)");
+            else System.out.println("[TickDynamic] TE injection disabled or swapTickable=false; leaving original lists intact for world: " + event.world.provider.getDimensionName());
         }
 
         if(TickDynamicMod.debugGroups) {
             try { entityManager.debugDumpSummary(); } catch(Throwable ignored) {}
             if(!TickDynamicMod.disableTileEntityControl) {
-                try { tileEntityManager.debugDumpSummary(); } catch(Throwable ignored) {}
-                try { tileEntityManager.debugDumpTilesByBlockMeta(); } catch(Throwable ignored) {}
+                try { if(tileEntityManager != null) tileEntityManager.debugDumpSummary(); } catch(Throwable ignored) {}
+                try { if(tileEntityManager != null) tileEntityManager.debugDumpTilesByBlockMeta(); } catch(Throwable ignored) {}
             }
         }
 
@@ -124,7 +163,7 @@ public class WorldEventHandler {
     	if(event.world == null || TickDynamicMod.isRemote(event.world))
     		return;
     	
-    	if(mod.debug)
+    	if(TickDynamicMod.debug)
     		System.out.println("TickDynamic unloading injected lists for world: " + event.world.provider.getDimensionName());
     	
     	try {
@@ -132,36 +171,35 @@ public class WorldEventHandler {
 			setCustomProfiler(event.world, customProfiler.original);
 		} catch (Exception e) {
 			System.err.println("Failed to revert World Profiler to original");
-			e.printStackTrace();
+			if(TickDynamicMod.debug) e.printStackTrace();
 		}
     	
-    	ListManager list = entityListManager.remove(event.world);
-    	if(list != null)
-    		list.clear();
-    	
-    	list = tileListManager.remove(event.world);
-    	if(list != null)
-    		list.clear();
-    	
+    	ListManagerEntities entityList = entityListManager.remove(event.world);
+    	if(entityList != null)
+    		entityList.clear();
+
+    	ListManagerTileEntities tileList = tileListManager.remove(event.world);
+    	if(tileList != null)
+    		tileList.clear();
+
     	mod.clearWorldEntityGroups(event.world);
     	
     	ITimed manager = mod.getWorldTimeManager(event.world);
     	if(manager != null)
-    		mod.timedObjects.remove(manager);
-    	
+    		mod.timedObjects.values().remove(manager);
+
     	for(ITimed timed : mod.timedObjects.values())
 		{
     		if(timed instanceof TimedEntities)
     		{
     			TimedEntities timedGroup = (TimedEntities)timed;
     			if(!timedGroup.getEntityGroup().valid)
-    				mod.timedObjects.remove(timedGroup);
+    				mod.timedObjects.values().remove(timedGroup);
     		}
 		}
-    	
     }
     
-    private void setCustomProfiler(World world, Profiler profiler) throws Exception {
+    private void setCustomProfiler(World world, Profiler profiler) {
     	ReflectionHelper.setPrivateValue(World.class, world, profiler, "theProfiler", "field_72984_F");
     }
 }

@@ -30,27 +30,37 @@ public class VersionChecker implements Runnable {
 		String encoding = "UTF-8";
 		String url = "http://mods.stjerncraft.com:8080";
 		String query = "v=error";
+		BufferedReader in = null;
 		try {
 			query = String.format("mv=%s&v=%s&sv=%s", URLEncoder.encode("forge1.7.10", encoding), 
 				URLEncoder.encode(TickDynamicMod.VERSION, encoding), URLEncoder.encode(ForgeVersion.getVersion(), encoding));
 			URLConnection connection = new URL(url + "/?" + query).openConnection();
 			connection.setRequestProperty("Accept-Charset", encoding);
 			connection.setRequestProperty("Host", "mods.stjerncraft.com");
-			BufferedReader in = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+			// Avoid blocking server thread if endpoint is slow
+			try {
+				connection.setConnectTimeout(5000);
+				connection.setReadTimeout(5000);
+			} catch(Throwable ignored) {}
+			in = new BufferedReader(new InputStreamReader(connection.getInputStream(), encoding));
 			String response = in.readLine();
-			in.close();
+			if(response == null) { checkDone.set(true); return; }
 			String[] args = response.split(",");
 			if(args.length != 4) { data.checkOk = false; checkDone.set(true); return; }
 			data.checkOk = args[0].equals("ok");
 			data.mcVersion = args[1];
 			data.modVersion = args[2];
 			data.updateUrl = args[3];
-		} catch (Exception e) { e.printStackTrace(); }
+		} catch (Exception e) {
+			if(TickDynamicMod.debug) e.printStackTrace();
+		} finally {
+			try { if(in != null) in.close(); } catch(Exception ignore) {}
+		}
 		checkDone.set(true);
 	}
 	public void runVersionCheck() {
 		checkDone.set(false);
-		new Thread(this).start();
+		new Thread(this, "TD-VersionChecker").start();
 	}
 	public VersionData getVersionData() {
 		if(!checkDone.get()) return null;

@@ -224,7 +224,7 @@ public class TickDynamicMod extends DummyModContainer {
         boolean hysteresisConfigured = activationTpsActivateBelow > 0 && activationTpsDeactivateAbove > activationTpsActivateBelow;
         // If starting inactive in either legacy threshold mode or hysteresis mode, set unlimited budgets
         if(!dynamicActive && (activationTpsThreshold > 0 || hysteresisConfigured)) setAllUnlimited(root);
-        if(c2meEnabled) c2meManager = new C2MEManager(this);
+        if(c2meEnabled) { c2meManager = new C2MEManager(this); MinecraftForge.EVENT_BUS.register(new com.wildex999.tickdynamic.c2me.C2MEEvents(this)); cpw.mods.fml.common.FMLCommonHandler.instance().bus().register(new com.wildex999.tickdynamic.c2me.C2MEEvents(this)); }
         // Mode summary log
         if(hysteresisConfigured) {
             System.out.println("[TickDynamic] Hysteresis mode: activateBelow="+activationTpsActivateBelow+" deactivateAbove="+activationTpsDeactivateAbove+" startingActive="+dynamicActive);
@@ -301,6 +301,7 @@ public class TickDynamicMod extends DummyModContainer {
         getTimedGroup("other").endTimer();
         root.endTick(true);
         lastTickDurationMs = (root.getTimeUsed()/ (double)TimeManager.timeMilisecond);
+        root.recordTickTime((long)lastTickDurationMs);
         if(debugTimer) System.out.println("Tick time used: " + lastTickDurationMs + "ms");
         try { com.wildex999.tickdynamic.listinject.CustomProfiler.lagIndex.decay(); } catch(Throwable ignore) {}
         boolean tpsReady = !tpsList.isEmpty();

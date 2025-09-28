@@ -309,19 +309,19 @@
         const lt = (w.lagTopTileTypes||[]);
         const lagTiles = (w.lagTopTiles||[]);
         const topChunks = (w.topChunks||[]);
-
         // Always show tile entity section if there are any loaded TEs
         if(teLoaded > 0) {
           html += `<div class=\"hotspots\">`;
-
           // Tile Entities by count - this is the main data you want to see
           if(ts && ts.length > 0){
-            html += `<div class=\"hotspot\"><h4>Tile Entities (by count)</h4><ul>`;
+            html += `<div class="hotspot"><h4>Tile Entities (by count)</h4><ul class="tileSummaryList">`;
             ts.forEach(s=>{
               const label = (s.display && s.display.trim()) ? s.display : (s.name||'unknown');
               const mod = s.modName || s.modId || '';
               const modDisplay = mod ? ` <span class=\"small\">(${mod})</span>` : '';
-              html += `<li><span>${label}${modDisplay}</span><span class=\"mono\">${fmtNum(s.count)}</span></li>`;
+              const isMb = s.multiblock;
+              const mbType = s.multiblockType||'';
+              html += `<li class=\"${isMb?'multiblock-tile':''}\"><span>${label}${modDisplay}${isMb?` <span title=\"${mbType}\" style=\"color:#4cc9f0;font-weight:bold;\">[MB]</span>`:''}</span><span class=\"mono\">${fmtNum(s.count)}</span></li>`;
             });
             html += `</ul></div>`;
           } else {
@@ -372,6 +372,17 @@
         } else {
           // Only show this message when there are truly no tile entities
           html += `<div class=\"small\" style=\"opacity:0.7; padding:0 16px;\">No tile entities loaded in this world.</div>`;
+        }
+
+        // Multiblock section (after tile entity section, before group table)
+        const mbs = w.multiblocks||[];
+        if(mbs.length > 0) {
+          html += `<div class="hotspots"><div class="hotspot"><h4>Detected Multiblocks</h4><div class="table-wrap"><table><thead><tr><th>Type</th><th>Name</th><th>Controller</th><th>Size</th><th>Active</th></tr></thead><tbody>`;
+          mbs.forEach(mb => {
+            const ctrl = mb.controller ? `${mb.controller.x},${mb.controller.y},${mb.controller.z}` : '';
+            html += `<tr><td>${mb.type||''}</td><td>${mb.displayName||''}</td><td>${ctrl}</td><td>${mb.size||0}</td><td>${mb.active?'<span class="pill ok">Yes</span>':'<span class="pill bad">No</span>'}</td></tr>`;
+          });
+          html += `</tbody></table></div></div></div>`;
         }
 
         html += `<div class=\"table-wrap\"><table>\n<thead><tr>\n  <th>Name</th><th>Type</th><th>Count</th><th class=\"col-slice\">Slices</th><th title=\"Budget cap for this group; ∞ means unlimited (>= 2× tick budget).\">Time Max (ms)</th><th>Time Avg (ms)</th><th class=\"col-last\">Time Last (ms)</th><th class=\"col-runAvg\">Run Avg</th><th>Speed</th><th class=\"col-tdlimit\">TD Slowdown</th><th class=\"col-min\">Min</th>\n</tr></thead><tbody>`;
