@@ -25,8 +25,13 @@ public class TimedGroup implements ITimed {
     public enum GroupType { TileEntity, Entity, Other }
     protected int targetSliceMax;
     protected int rampRate = 10; // Max change per tick, configurable
+    protected com.wildex999.tickdynamic.listinject.ListManagerTileEntities tileEntityListManager;
 
     public TimedGroup(TickDynamicMod mod, World world, String name, String configEntry) {
+        this(mod, world, name, configEntry, null);
+    }
+
+    public TimedGroup(TickDynamicMod mod, World world, String name, String configEntry, com.wildex999.tickdynamic.listinject.ListManagerTileEntities tileEntityListManager) {
         if(configEntry != null)
             mod.timedObjects.put(configEntry, this);
         else
@@ -35,6 +40,7 @@ public class TimedGroup implements ITimed {
         this.mod = mod;
         this.world = world;
         this.configEntry = configEntry;
+        this.tileEntityListManager = tileEntityListManager;
         listTimeUsed = new LinkedList<>();
         listObjectsRun = new LinkedList<>();
     }
@@ -58,6 +64,14 @@ public class TimedGroup implements ITimed {
     @Override
     public void writeConfig(boolean saveFile) {}
 
+    // Returns the number of tile entities in this group. Subclasses should override if relevant.
+    public int getTileEntitiesCount() {
+        if (tileEntityListManager != null) {
+            return tileEntityListManager.size();
+        }
+        return 0;
+    }
+
     public void startTimer() { startTime = System.nanoTime(); }
     public void startTimer(long startTime) { this.startTime = startTime; }
     public long endTimer() { long time = System.nanoTime() - startTime; timeUsed += time; return time; }
@@ -74,7 +88,11 @@ public class TimedGroup implements ITimed {
      * Set the target sliceMax. The actual sliceMax will ramp toward this value.
      */
     public void setSliceMax(int newSliceMax) {
-        this.targetSliceMax = newSliceMax;
+        // On first assignment, initialize sliceMax immediately so groups don’t start at 0
+        if (this.sliceMax == 0 && this.targetSliceMax == 0) {
+            this.sliceMax = Math.max(0, newSliceMax);
+        }
+        this.targetSliceMax = Math.max(0, newSliceMax);
     }
 
     /**
@@ -84,12 +102,12 @@ public class TimedGroup implements ITimed {
      */
     public void rampSliceMax() {
         boolean allowUnthrottle = true;
-        if (mod != null && mod.timedObjects != null && mod.timedObjects.containsKey("world")) {
-            Object tm = mod.timedObjects.get("world");
-            if (tm instanceof com.wildex999.tickdynamic.timemanager.TimeManager) {
-                allowUnthrottle = ((com.wildex999.tickdynamic.timemanager.TimeManager)tm).shouldAllowUnthrottle();
+        try {
+            if (mod != null && world != null) {
+                com.wildex999.tickdynamic.timemanager.TimeManager tm = mod.getWorldTimeManager(world);
+                if (tm != null) allowUnthrottle = tm.shouldAllowUnthrottle();
             }
-        }
+        } catch(Throwable ignore) {}
         if (sliceMax < targetSliceMax && allowUnthrottle) {
             sliceMax = Math.min(sliceMax + rampRate, targetSliceMax);
         } else if (sliceMax > targetSliceMax) {

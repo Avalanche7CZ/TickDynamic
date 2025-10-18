@@ -947,9 +947,9 @@ public final class SnapshotProvider {
         long tmaxNs = tg!=null?tg.getTimeMax():0L;
         long avgNs = tg!=null?tg.getTimeUsedAverage():0L;
         long lastNs = tg!=null?tg.getTimeUsedLast():0L;
-        // mark unlimited if far above default budget
+        // mark unlimited if slices disabled or far above default budget
         long unlimitedThresh = 2L * com.wildex999.tickdynamic.timemanager.ITimed.timeMilisecond * (long)mod.defaultTickTime;
-        boolean unlimited = tmaxNs > unlimitedThresh;
+        boolean unlimited = (tg!=null && tg.getSliceMax()==0) || tmaxNs > unlimitedThresh;
         field(sb, "unlimited", unlimited).append(',');
         // expose in milliseconds as doubles for the UI
         num(sb, "maxMs", tmaxNs/1_000_000.0).append(',');

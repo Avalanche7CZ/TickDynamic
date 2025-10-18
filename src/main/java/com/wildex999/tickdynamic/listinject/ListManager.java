@@ -229,6 +229,22 @@ public class ListManager implements List<EntityObject> {
 		} else {
 			cls = object.getClass();
 		}
+		// Controller-only routing: if this is a GT multiblock controller, force it into 'gtcontroller' group
+		if(entityType == EntityType.TileEntity) {
+			TileEntity te = object.TD_selfTileEntity;
+			if(te != null) {
+				try {
+					if(com.wildex999.tickdynamic.util.ModTileEntityUtils.isGregTechMultiblockController(te)) {
+						EntityGroup ctl = mod.getWorldEntityGroup(world, "gtcontroller", EntityType.TileEntity, true, false);
+						if(ctl != null) {
+							if(mod.debugGroups) System.out.println("Adding Controller: " + te.getClass() + " -> gtcontroller");
+							ctl.addEntity(object);
+							return;
+						}
+					}
+				} catch(Throwable ignore) {}
+			}
+		}
 		group = groupMap.get(cls);
 		if(group == null) {
 			// Try to resolve group by superclass/interface to handle subclassed Entities/TileEntities (e.g., multiblocks)

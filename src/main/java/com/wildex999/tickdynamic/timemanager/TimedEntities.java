@@ -128,9 +128,18 @@ public class TimedEntities extends TimedGroup {
         if (timeMax == 0 || !mod.enabled) // No limit set
             return Integer.MAX_VALUE;
 
-        double timePerObject = (int) Math.ceil((double) getTimeUsedAverage() / (double) getObjectsRunAverage());
+        int avgObjectsRun = getObjectsRunAverage();
+        if (avgObjectsRun <= 0) {
+            // No objects have been run, so return 0 to avoid division by zero
+            return 0;
+        }
+        double timePerObject = Math.ceil((double) getTimeUsedAverage() / (double) avgObjectsRun);
         if (TickDynamicMod.debugTimer)
-            System.out.println(name + ": getTargetObjectCount: timeUsed:" + getTimeUsedAverage() + " objectsRun: " + getObjectsRunAverage() + " timePerObject: " + timePerObject + " timeMax: " + timeMax);
+            System.out.println(name + ": getTargetObjectCount: timeUsed:" + getTimeUsedAverage() + " objectsRun: " + avgObjectsRun + " timePerObject: " + timePerObject + " timeMax: " + timeMax);
+        if (timePerObject <= 0) {
+            // Avoid division by zero or negative
+            return Integer.MAX_VALUE;
+        }
         return (int) Math.ceil(timeMax / timePerObject);
     }
 
@@ -175,6 +184,9 @@ public class TimedEntities extends TimedGroup {
             updateCount = minimumObjects;
         if (updateCount > listSize)
             updateCount = listSize;
+        // Safety: never schedule zero updates when we have objects. This bootstraps stats.
+        if (listSize > 0 && updateCount <= 0)
+            updateCount = 1;
 
         // Calculate TPS
         if (listSize > 0)
@@ -237,8 +249,12 @@ public class TimedEntities extends TimedGroup {
 
         // Return the minimum which requires most time
         long reservedObjects = 0;
-        double timePerObject = (int) Math.ceil((double) getTimeUsedAverage() / (double) getObjectsRunAverage());
-        if (getMinimumObjects() > 0)
+        int avgObjectsRun = getObjectsRunAverage();
+        double timePerObject = 0;
+        if (avgObjectsRun > 0) {
+            timePerObject = Math.ceil((double) getTimeUsedAverage() / (double) avgObjectsRun);
+        }
+        if (getMinimumObjects() > 0 && timePerObject > 0)
             reservedObjects = (long) (timePerObject * getMinimumObjects());
 
         long reservedTPS = 0;
@@ -262,5 +278,13 @@ public class TimedEntities extends TimedGroup {
         if (entityGroup == null)
             return 0;
         return entityGroup.entities.size();
+    }
+
+    @Override
+    public int getTileEntitiesCount() {
+        if (entityGroup != null && entityGroup.getGroupType() == com.wildex999.tickdynamic.listinject.EntityType.TileEntity) {
+            return entityGroup.entities.size();
+        }
+        return 0;
     }
 }

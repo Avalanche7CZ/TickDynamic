@@ -40,6 +40,7 @@ public class CustomProfiler extends Profiler {
         if (currentEO != null && currentEO.TD_selfTileEntity != null) return;
         long now = System.nanoTime();
         if (manualActive && manualCurrentTe != null) {
+            long delta = now - manualStartNs;
             try {
                 net.minecraft.world.World w = manualCurrentTe.getWorldObj();
                 net.minecraft.world.World wEff = (w != null ? w : ownerWorld);
@@ -50,8 +51,21 @@ public class CustomProfiler extends Profiler {
                         manualCurrentTe.yCoord,
                         manualCurrentTe.zCoord,
                         manualCurrentTe,
-                        now - manualStartNs
+                        delta
                     );
+                    // Also accumulate into the tileentity group so UI group table isn’t zeroed
+                    com.wildex999.tickdynamic.timemanager.TimedEntities grp =
+                        TickDynamicMod.tickDynamic != null
+                            ? TickDynamicMod.tickDynamic.getWorldTimedGroup(wEff, "tileentity", true, true)
+                            : null;
+                    if (grp != null) grp.setTimeUsed(grp.getTimeUsed() + delta);
+                    if (com.wildex999.tickdynamic.util.ModTileEntityUtils.isGregTechMultiblockController(manualCurrentTe)) {
+                        com.wildex999.tickdynamic.timemanager.TimedEntities gtc =
+                            TickDynamicMod.tickDynamic != null
+                                ? TickDynamicMod.tickDynamic.getWorldTimedGroup(wEff, "gtcontroller", true, true)
+                                : null;
+                        if (gtc != null) gtc.setTimeUsed(gtc.getTimeUsed() + delta);
+                    }
                 }
             } catch(Throwable ignore) {}
         }
@@ -64,6 +78,7 @@ public class CustomProfiler extends Profiler {
         if (currentEO != null && currentEO.TD_selfTileEntity != null) { manualActive = false; manualCurrentTe = null; return; }
         if (!manualActive || manualCurrentTe == null) return;
         long now = System.nanoTime();
+        long delta = now - manualStartNs;
         try {
             net.minecraft.world.World w = manualCurrentTe.getWorldObj();
             net.minecraft.world.World wEff = (w != null ? w : ownerWorld);
@@ -74,8 +89,20 @@ public class CustomProfiler extends Profiler {
                     manualCurrentTe.yCoord,
                     manualCurrentTe.zCoord,
                     manualCurrentTe,
-                    now - manualStartNs
+                    delta
                 );
+                com.wildex999.tickdynamic.timemanager.TimedEntities grp =
+                    TickDynamicMod.tickDynamic != null
+                        ? TickDynamicMod.tickDynamic.getWorldTimedGroup(wEff, "tileentity", true, true)
+                        : null;
+                if (grp != null) grp.setTimeUsed(grp.getTimeUsed() + delta);
+                if (com.wildex999.tickdynamic.util.ModTileEntityUtils.isGregTechMultiblockController(manualCurrentTe)) {
+                    com.wildex999.tickdynamic.timemanager.TimedEntities gtc =
+                        TickDynamicMod.tickDynamic != null
+                            ? TickDynamicMod.tickDynamic.getWorldTimedGroup(wEff, "gtcontroller", true, true)
+                            : null;
+                    if (gtc != null) gtc.setTimeUsed(gtc.getTimeUsed() + delta);
+                }
             }
         } catch(Throwable ignore) {}
         manualActive = false;
@@ -246,6 +273,18 @@ public class CustomProfiler extends Profiler {
                                         te,
                                         dur
                                     );
+                                    com.wildex999.tickdynamic.timemanager.TimedEntities grp =
+                                        TickDynamicMod.tickDynamic != null
+                                            ? TickDynamicMod.tickDynamic.getWorldTimedGroup(w, "tileentity", true, true)
+                                            : null;
+                                    if (grp != null) grp.setTimeUsed(grp.getTimeUsed() + dur);
+                                    if (com.wildex999.tickdynamic.util.ModTileEntityUtils.isGregTechMultiblockController(te)) {
+                                        com.wildex999.tickdynamic.timemanager.TimedEntities gtc =
+                                            TickDynamicMod.tickDynamic != null
+                                                ? TickDynamicMod.tickDynamic.getWorldTimedGroup(w, "gtcontroller", true, true)
+                                                : null;
+                                        if (gtc != null) gtc.setTimeUsed(gtc.getTimeUsed() + dur);
+                                    }
                                 }
                             } catch (Throwable ignored) {
                             }
@@ -265,6 +304,18 @@ public class CustomProfiler extends Profiler {
                                                 te,
                                                 dur
                                             );
+                                            com.wildex999.tickdynamic.timemanager.TimedEntities grp =
+                                                TickDynamicMod.tickDynamic != null
+                                                    ? TickDynamicMod.tickDynamic.getWorldTimedGroup(wEff, "tileentity", true, true)
+                                                    : null;
+                                            if (grp != null) grp.setTimeUsed(grp.getTimeUsed() + dur);
+                                            if (com.wildex999.tickdynamic.util.ModTileEntityUtils.isGregTechMultiblockController(te)) {
+                                                com.wildex999.tickdynamic.timemanager.TimedEntities gtc =
+                                                    TickDynamicMod.tickDynamic != null
+                                                        ? TickDynamicMod.tickDynamic.getWorldTimedGroup(wEff, "gtcontroller", true, true)
+                                                        : null;
+                                                if (gtc != null) gtc.setTimeUsed(gtc.getTimeUsed() + dur);
+                                            }
                                         }
                                     } catch (Throwable ignore) {
                                     } finally {

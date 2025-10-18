@@ -20,4 +20,5 @@ public interface ITimed {
     void endTick(boolean recursive);
     boolean isManager();
     String getName();
+    default int getTileEntitiesCount() { return 0; }
 }

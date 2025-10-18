@@ -152,7 +152,7 @@ public class TickDynamicMod extends DummyModContainer {
     public String[] c2meDimensionWhitelist = new String[0];
 
     // Web dashboard settings
-    public boolean webEnabled = Boolean.getBoolean("tickdynamic.web.enabled");
+    public boolean webEnabled = Boolean.parseBoolean(System.getProperty("tickdynamic.web.enabled", "true"));
     public String webBind = System.getProperty("tickdynamic.web.bind", "127.0.0.1");
     public int webPort = Integer.getInteger("tickdynamic.web.port", 9777);
     public String webToken = System.getProperty("tickdynamic.web.token", "");
@@ -362,6 +362,8 @@ public class TickDynamicMod extends DummyModContainer {
                 long budgetNs = (long) (defaultTickTime * com.wildex999.tickdynamic.timemanager.ITimed.timeMilisecond);
                 double errorMs = Math.max(0.0, lastTickDurationMs - defaultTickTime);
                 double baseGain = (errorMs <= 0.0 || !dynamicActive || !tpsReady) ? 0.0 : (tileOffenderControllerGain * (errorMs / Math.max(1.0, defaultTickTime)));
+                boolean healthyNoThrottle = false;
+                try { healthyNoThrottle = (root != null && !root.shouldAllowThrottle()); } catch(Throwable ignore) {}
                 if(baseGain > 0.0) {
                     if(baseGain < tileOffenderControllerMin) baseGain = tileOffenderControllerMin;
                     if(baseGain > tileOffenderControllerMax) baseGain = tileOffenderControllerMax;
@@ -391,25 +393,23 @@ public class TickDynamicMod extends DummyModContainer {
                         perChunk.put(ck, cnt+1);
                         long key = packTileKey(ts.x, ts.y, ts.z);
                         set.add(key);
-                        // Severity by time intensity relative to half-budget (>=50% budget => sev ~ 1.0)
                         double sev = ts.totalNs / (double)(Math.max(1L, budgetNs/2));
                         if(sev > 1.0) sev = 1.0; if(sev < 0) sev = 0;
                         sevMap.put(key, Double.valueOf(sev));
                     }
                     if(!set.isEmpty()) tileOffenders.put(Integer.valueOf(dim), set); else tileOffenders.remove(Integer.valueOf(dim));
-                    // Graceful penalty update per dimension
                     java.util.concurrent.ConcurrentHashMap<Long, Double> pen = tileOffenderPenalty.get(Integer.valueOf(dim));
                     if(pen == null) { pen = new java.util.concurrent.ConcurrentHashMap<Long, Double>(); tileOffenderPenalty.put(Integer.valueOf(dim), pen); }
                     java.util.concurrent.ConcurrentHashMap<Long, Double> lastSev = tileOffenderSeverity.get(Integer.valueOf(dim));
                     if(lastSev == null) { lastSev = new java.util.concurrent.ConcurrentHashMap<Long, Double>(); tileOffenderSeverity.put(Integer.valueOf(dim), lastSev); }
-                    // Decay all existing penalties
+                    // Faster decay when healthy (no sustained overload)
+                    double decay = tileOffenderPenaltyDown * (healthyNoThrottle ? 3.0 : 1.0);
                     for(java.util.Iterator<java.util.Map.Entry<Long, Double>> it = pen.entrySet().iterator(); it.hasNext();) {
                         java.util.Map.Entry<Long, Double> en = it.next();
                         double p = en.getValue() != null ? en.getValue().doubleValue() : 0.0;
-                        p -= tileOffenderPenaltyDown; if(p < 0) p = 0;
+                        p -= decay; if(p < 0) p = 0;
                         if(p < 0.01 && !set.contains(en.getKey())) { it.remove(); } else { en.setValue(Double.valueOf(p)); }
                     }
-                    // Global cap scaling by percent of loaded TE
                     int loadedTe = 0; try { java.util.List<?> raw = ws.loadedTileEntityList; if(raw != null) loadedTe = raw.size(); } catch(Throwable ignore) {}
                     int maxPen = (int)Math.floor(Math.max(0.0, tileOffenderGlobalCapPercent) * Math.max(1, loadedTe));
                     double gainScale = 1.0;
@@ -418,7 +418,6 @@ public class TickDynamicMod extends DummyModContainer {
                         if(currentPenalized > maxPen) gainScale = Math.max(0.1, (double)maxPen / (double)currentPenalized);
                     }
                     double effGain = baseGain * gainScale;
-                    // Boost penalties for current offenders proportionally to severity and health gain
                     if(effGain > 0.0) {
                         for(java.util.Map.Entry<Long, Double> en : sevMap.entrySet()) {
                             long k = en.getKey(); double severity = en.getValue() != null ? en.getValue().doubleValue() : 0.0;
@@ -430,7 +429,6 @@ public class TickDynamicMod extends DummyModContainer {
                             pen.put(k, Double.valueOf(p));
                         }
                     }
-                    // Store last severities for snapshot/observability
                     lastSev.clear();
                     for(java.util.Map.Entry<Long, Double> en : sevMap.entrySet()) lastSev.put(en.getKey(), en.getValue());
                 }
@@ -670,14 +668,20 @@ public class TickDynamicMod extends DummyModContainer {
         for(Map.Entry<String, EntityGroup> e : entityGroups.entrySet()) {
             if(e.getKey().startsWith(prefix)) out.add(e.getValue());
         }
-        // Ensure base groups exist (entity/tileentity) if none yet
-        if(out.isEmpty()) {
+        // Ensure base groups exist (entity/tileentity) for every world, even if TE control is disabled
+        boolean hasEntity = false, hasTile = false;
+        for(EntityGroup g : out) {
+            if(g == null) continue;
+            if("entity".equalsIgnoreCase(g.getName())) hasEntity = true;
+            else if("tileentity".equalsIgnoreCase(g.getName())) hasTile = true;
+        }
+        if(!hasEntity) {
             EntityGroup eg = getWorldEntityGroup(w, "entity", EntityType.Entity, true, false);
             if(eg != null) out.add(eg);
-            if(!disableTileEntityControl) {
-                EntityGroup tg = getWorldEntityGroup(w, "tileentity", EntityType.TileEntity, true, false);
-                if(tg != null) out.add(tg);
-            }
+        }
+        if(!hasTile) {
+            EntityGroup tg = getWorldEntityGroup(w, "tileentity", EntityType.TileEntity, true, false);
+            if(tg != null) out.add(tg);
         }
         return out;
     }

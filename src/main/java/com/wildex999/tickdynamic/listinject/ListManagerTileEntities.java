@@ -37,6 +37,14 @@ public class ListManagerTileEntities implements List<TileEntity>, java.util.Rand
         return thr > 0 && mod.lastTickDurationMs > 0 && mod.lastTickDurationMs < thr;
     }
 
+    private void trackTe(TileEntity te){
+        if(te == null) return;
+        CustomProfiler p = this.profiler;
+        if(p != null) {
+            try { p.manualSwitchTe(te); } catch(Throwable ignore) {}
+        }
+    }
+
     @Override
     public int size() {
         if (TickDynamicMod.disableTileEntityControl || shouldSkipSlicingForHealthyTick() || !mod.dynamicActive || TickDynamicMod.safeEntityIteration || TickDynamicMod.disableEntityTimeSlicing || !ListManager.isServerTickThread()) {
@@ -88,14 +96,20 @@ public class ListManagerTileEntities implements List<TileEntity>, java.util.Rand
 
     @Override
     public Iterator<TileEntity> iterator() {
-        final Iterator<EntityObject> it = internalList.iterator();
+        // Use timed iterator when control is active; otherwise raw iterator
+        if (TickDynamicMod.disableTileEntityControl || shouldSkipSlicingForHealthyTick() || !mod.dynamicActive || TickDynamicMod.safeEntityIteration || TickDynamicMod.disableEntityTimeSlicing || !ListManager.isServerTickThread()) {
+            final Iterator<EntityObject> it = internalList.iterator();
+            return new Iterator<TileEntity>() {
+                @Override public boolean hasNext() { return it.hasNext(); }
+                @Override public TileEntity next() { EntityObject obj = it.next(); TileEntity te = (obj != null) ? obj.TD_selfTileEntity : null; trackTe(te); return te; }
+                @Override public void remove() { it.remove(); }
+            };
+        }
+        final EntityIteratorTimed eit = new EntityIteratorTimed(internalList, internalList.getAge());
         return new Iterator<TileEntity>() {
-            @Override public boolean hasNext() { return it.hasNext(); }
-            @Override public TileEntity next() {
-                EntityObject obj = it.next();
-                return (obj != null) ? obj.TD_selfTileEntity : null;
-            }
-            @Override public void remove() { it.remove(); }
+            @Override public boolean hasNext() { return eit.hasNext(); }
+            @Override public TileEntity next() { EntityObject eo = eit.next(); TileEntity te = (eo != null) ? eo.TD_selfTileEntity : null; trackTe(te); return te; }
+            @Override public void remove() { eit.remove(); }
         };
     }
 
@@ -201,7 +215,9 @@ public class ListManagerTileEntities implements List<TileEntity>, java.util.Rand
                 return unwrap(internalList.get(index));
             }
             lastObj = entityIterator.next();
-            return lastObj != null ? lastObj.TD_selfTileEntity : null;
+            TileEntity te = lastObj != null ? lastObj.TD_selfTileEntity : null;
+            trackTe(te);
+            return te;
         } catch (NoSuchElementException nse) {
             updateStarted = false;
             if (TickDynamicMod.debug)
@@ -213,7 +229,11 @@ public class ListManagerTileEntities implements List<TileEntity>, java.util.Rand
         }
     }
 
-    private TileEntity unwrap(EntityObject obj) { return (obj != null) ? obj.TD_selfTileEntity : null; }
+    private TileEntity unwrap(EntityObject obj) {
+        TileEntity te = (obj != null) ? obj.TD_selfTileEntity : null;
+        trackTe(te);
+        return te;
+    }
 
     @Override
     public TileEntity set(int index, TileEntity element) {
@@ -258,34 +278,48 @@ public class ListManagerTileEntities implements List<TileEntity>, java.util.Rand
         final ListIterator<EntityObject> it = internalList.listIterator(index);
         return new ListIterator<TileEntity>() {
             @Override public boolean hasNext() { return it.hasNext(); }
-            @Override public TileEntity next() { return unwrap(it.next()); }
+            @Override public TileEntity next() { TileEntity te = unwrap(it.next()); trackTe(te); return te; }
             @Override public boolean hasPrevious() { return it.hasPrevious(); }
-            @Override public TileEntity previous() { return unwrap(it.previous()); }
+            @Override public TileEntity previous() { TileEntity te = unwrap(it.previous()); trackTe(te); return te; }
             @Override public int nextIndex() { return it.nextIndex(); }
             @Override public int previousIndex() { return it.previousIndex(); }
             @Override public void remove() { it.remove(); }
-            @Override public void set(TileEntity te) { EntityObject obj = new EntityObject(); obj.TD_selfTileEntity = te; obj.TD_selfInit = true; it.set(obj); }
-            @Override public void add(TileEntity te) { EntityObject obj = new EntityObject(); obj.TD_selfTileEntity = te; obj.TD_selfInit = true; it.add(obj); }
+            @Override public void set(TileEntity e) { it.set(wrap(e)); }
+            @Override public void add(TileEntity e) { it.add(wrap(e)); }
         };
     }
 
-    @Override
-    public List<TileEntity> subList(int fromIndex, int toIndex) { List<EntityObject> sub = internalList.subList(fromIndex, toIndex); List<TileEntity> result = new ArrayList<>(); for (EntityObject obj : sub) { if (obj != null) result.add(obj.TD_selfTileEntity); } return result; }
+    private EntityObject wrap(TileEntity te){ EntityObject o=new EntityObject(); o.TD_selfTileEntity=te; o.TD_selfInit=true; return o; }
 
-    public void debugDumpSummary() { }
-    public void debugDumpTilesByBlockMeta() { }
+    @Override public List<TileEntity> subList(int fromIndex, int toIndex) { throw new UnsupportedOperationException(); }
+    @Override public boolean equals(Object o) { return super.equals(o); }
+    @Override public int hashCode() { return super.hashCode(); }
 
-    public void tickAllTileEntities(net.minecraft.world.World world, long worldTime) {
-        final int SLOW_TICK_RATE = 4;
-        for (TileEntity te : this) {
-            if (te == null || te.isInvalid() || te.getWorldObj() != world) continue;
-            try {
-                if (com.wildex999.tickdynamic.util.ModTileEntityUtils.isGregTechMultiblockController(te)) {
-                    if (worldTime % SLOW_TICK_RATE == 0) te.updateEntity();
-                } else te.updateEntity();
-            } catch (Throwable t) {
-                System.err.println("[TickDynamic] Error ticking tile entity: " + te + ", " + t);
+    public void debugDumpSummary() {
+        try {
+            int total = getTotalCount();
+            String wname = (world != null && world.provider != null) ? world.provider.getDimensionName() : "?";
+            System.out.println("[TickDynamic][Debug] TE Summary for world '" + wname + "' (dim " + (world!=null?world.provider.dimensionId:"?") + ") total=" + total);
+            java.util.List<Object[]> top = snapshotTopTileCounts(20);
+            if (top == null || top.isEmpty()) {
+                System.out.println("[TickDynamic][Debug]   (no pre-aggregated counts; try debugDumpTilesByBlockMeta)");
+                return;
             }
+            int n=0; for(Object[] row : top) {
+                String reg = String.valueOf(row[0]); int meta = ((Integer)row[1]).intValue(); int count = ((Integer)row[2]).intValue();
+                System.out.println("  " + reg + ":" + meta + " -> " + count);
+                if(++n>=10) break;
+            }
+        } catch(Throwable t) {
+            System.out.println("[TickDynamic][Debug] TE Summary Error: " + t.getMessage());
+        }
+    }
+
+    public void debugDumpTilesByBlockMeta() {
+        try {
+            internalList.debugDumpTilesByBlockMeta();
+        } catch(Throwable t) {
+            System.out.println("[TickDynamic][TE Summary] Error: " + t.getMessage());
         }
     }
 }

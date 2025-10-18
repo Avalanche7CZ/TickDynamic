@@ -85,8 +85,9 @@ public class CommandHandler implements ICommand {
 		
 		if(args[0].equals("tps"))
 		{
-			
-			sender.addChatMessage(new ChatComponentText("Average TPS: " + getTPSFormatted(mod) + " TPS"));
+			String avgMs = getAvgTickMsFormatted(mod);
+			String avgTps = getTPSFormatted(mod);
+			sender.addChatMessage(new ChatComponentText("Avg Tick: " + avgMs + "  Avg TPS: " + avgTps));
 			return;
 		} else if(args[0].equals("help")) {
 			sender.addChatMessage(new ChatComponentText("You can find the documentation over at http://mods.stjerncraft.com/tickdynamic"));
@@ -142,19 +143,30 @@ public class CommandHandler implements ICommand {
 	}
 	
 	public static String getTPSFormatted(TickDynamicMod mod) {
-		String tpsOut;
 		String color;
-		
 		if(mod.averageTPS >= 19)
 			color = EnumChatFormatting.GREEN.toString();
 		else if(mod.averageTPS > 10)
 			color = EnumChatFormatting.YELLOW.toString();
 		else
 			color = EnumChatFormatting.RED.toString();
-		
 		DecimalFormat tpsFormat = new DecimalFormat("#.00");
-		tpsOut = color + tpsFormat.format(mod.averageTPS) + EnumChatFormatting.RESET;
-		return tpsOut;
+		return color + tpsFormat.format(mod.averageTPS) + EnumChatFormatting.RESET;
+	}
+
+	public static String getAvgTickMsFormatted(TickDynamicMod mod) {
+		double tps = mod.averageTPS;
+		if(tps <= 0) tps = 0.0001; // avoid div by zero
+		double ms = 1000.0 / tps;
+		String color;
+		if(ms <= 50.0)
+			color = EnumChatFormatting.GREEN.toString();
+		else if(ms <= 90.0)
+			color = EnumChatFormatting.YELLOW.toString();
+		else
+			color = EnumChatFormatting.RED.toString();
+		DecimalFormat msFormat = new DecimalFormat("#.00");
+		return color + msFormat.format(ms) + "ms" + EnumChatFormatting.RESET;
 	}
 
 }
